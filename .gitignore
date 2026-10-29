@@ -1,0 +1,13 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Veri (lisansli ve buyuk; asla commit etme)
+data/
+*.pkl
+*.zip
+
+# macOS
+.DS_Store
+

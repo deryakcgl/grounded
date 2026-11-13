@@ -1,0 +1,12 @@
+{
+  "name": "ADS1292R",
+  "author": "Grounded",
+  "pins": ["CS", "SCLK", "DIN", "DOUT", "DRDY", "PWDN", "START", "GND"],
+  "controls": [
+    { "id": "heartRate", "label": "Heart rate (bpm)", "type": "range", "min": 40, "max": 180, "step": 1 },
+    { "id": "breathRate", "label": "Breathing rate (/min)", "type": "range", "min": 4, "max": 30, "step": 1 },
+    { "id": "hrvDepth", "label": "HRV: breathing-driven RR swing (ms)", "type": "range", "min": 0, "max": 100, "step": 5 },
+    { "id": "holdBreath", "label": "Hold breath (0 = no, 1 = yes)", "type": "range", "min": 0, "max": 1, "step": 1 },
+    { "id": "electrodeContact", "label": "ECG electrodes on skin (0 = off, 1 = on)", "type": "range", "min": 0, "max": 1, "step": 1 }
+  ]
+}

@@ -1,0 +1,133 @@
+{
+  "version": 1,
+  "author": "Grounded",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "board-st-nucleo-c031c6",
+      "id": "nucleo",
+      "top": 0,
+      "left": 0,
+      "attrs": {}
+    },
+    {
+      "type": "chip-ads1292r",
+      "id": "ads",
+      "top": 40,
+      "left": 330,
+      "attrs": {
+        "heartRate": "70",
+        "breathRate": "15",
+        "hrvDepth": "40",
+        "holdBreath": "0",
+        "electrodeContact": "1"
+      }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "beat",
+      "top": 220,
+      "left": 340,
+      "attrs": {
+        "color": "red",
+        "label": "beat"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r1",
+      "top": 300,
+      "left": 335,
+      "rotate": 90,
+      "attrs": {
+        "value": "220"
+      }
+    }
+  ],
+  "connections": [
+    [
+      "$serialMonitor:TX",
+      "nucleo:PA3",
+      "",
+      []
+    ],
+    [
+      "$serialMonitor:RX",
+      "nucleo:PA2",
+      "",
+      []
+    ],
+    [
+      "ads:CS",
+      "nucleo:D10",
+      "orange",
+      []
+    ],
+    [
+      "ads:SCLK",
+      "nucleo:D13",
+      "yellow",
+      []
+    ],
+    [
+      "ads:DIN",
+      "nucleo:D11",
+      "green",
+      []
+    ],
+    [
+      "ads:DOUT",
+      "nucleo:D12",
+      "blue",
+      []
+    ],
+    [
+      "ads:DRDY",
+      "nucleo:D9",
+      "violet",
+      []
+    ],
+    [
+      "ads:PWDN",
+      "nucleo:D8",
+      "gray",
+      []
+    ],
+    [
+      "ads:START",
+      "nucleo:GND.9",
+      "black",
+      []
+    ],
+    [
+      "ads:GND",
+      "nucleo:GND.9",
+      "black",
+      []
+    ],
+    [
+      "beat:A",
+      "r1:1",
+      "red",
+      []
+    ],
+    [
+      "r1:2",
+      "nucleo:D7",
+      "red",
+      []
+    ],
+    [
+      "beat:C",
+      "nucleo:GND.9",
+      "black",
+      []
+    ]
+  ],
+  "dependencies": {},
+  "serialMonitor": {
+    "display": "terminal",
+    "newline": "lf",
+    "convertEol": true
+  }
+}

@@ -17,6 +17,7 @@ void PodPipeline::push(float resp, float ecg, uint8_t lead_off) {
   // --- ECG ---
   const int32_t b = beat_.update(ecg);
   if (b >= 0) {
+    if (on_beat_) on_beat_();
     if (prev_beat_ >= 0 && hrv_.update((float)(b - prev_beat_) / ECG_FS)) {
       send(proto_hrv(line_, sizeof line_, sample_to_ms(b, ECG_FS), hrv_.rmssd(), hrv_.heartRate()));
     }

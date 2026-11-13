@@ -18,7 +18,9 @@ class PodPipeline {
   typedef void (*Writer)(const char* text, size_t len);
   static_assert(ECG_FS % RESP_FS == 0, "frame rate must be a multiple of the respiration rate");
 
-  explicit PodPipeline(Writer write) : write_(write) {}
+  typedef void (*BeatHook)();   // called when a heartbeat is detected (e.g. blink an LED)
+
+  explicit PodPipeline(Writer write, BeatHook on_beat = nullptr) : write_(write), on_beat_(on_beat) {}
 
   // One frame at ECG_FS. resp and ecg in any consistent units (the detectors adapt to the
   // signal level); ECG is passed in millivolts to match the data the detectors were tuned on.
@@ -28,6 +30,7 @@ class PodPipeline {
   void send(int len);
 
   Writer write_;
+  BeatHook on_beat_;
   BreathDetector breath_;
   BeatDetector beat_;
   HrvTracker hrv_;

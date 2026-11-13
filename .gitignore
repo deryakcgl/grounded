@@ -18,6 +18,7 @@ firmware/test_native/led_test
 firmware/test_native/led_sim
 firmware/test_native/ads_test
 firmware/test_native/pod_sim
+firmware/test_native/wokwi_chip_sim
 
 # PlatformIO build output
 .pio/

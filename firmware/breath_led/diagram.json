@@ -99,6 +99,7 @@
   "dependencies": {},
   "serialMonitor": {
     "display": "terminal",
-    "newline": "lf"
+    "newline": "lf",
+    "convertEol": true
   }
 }

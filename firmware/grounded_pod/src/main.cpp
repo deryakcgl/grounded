@@ -16,6 +16,8 @@
 const uint32_t PIN_CS = D10;
 const uint32_t PIN_DRDY = D9;
 const uint32_t PIN_RESET = D8;
+const uint32_t PIN_BEAT_LED = D7;     // blinks on every detected heartbeat
+const uint32_t BEAT_BLINK_MS = 80;
 
 // Mode 1 (8.5.1.3/8.5.1.4: DIN latched on the falling edge, DOUT changes on the rising edge).
 // 1 MHz: below the 2 x fCLK limit for register access, and one byte (8 us) already lasts the
@@ -45,8 +47,14 @@ ArduinoBus bus;
 Ads1292r adc(bus);
 SpscFifo<Ads1292r::Frame, 64> fifo;   // 64 frames = 256 ms of slack for loop()
 
+uint32_t beatLedOn = 0;   // millis() when the LED was switched on, 0 = off
+
 void serialWrite(const char* text, size_t len) { Serial.write(text, len); }
-PodPipeline pipeline(serialWrite);
+void onBeat() {
+  digitalWrite(PIN_BEAT_LED, HIGH);
+  beatLedOn = millis() | 1;   // | 1: never 0, which means "off"
+}
+PodPipeline pipeline(serialWrite, onBeat);
 
 void onDrdy() {
   Ads1292r::Frame f;
@@ -61,6 +69,7 @@ void setup() {
   pinMode(PIN_RESET, OUTPUT);
   digitalWrite(PIN_RESET, HIGH);
   pinMode(PIN_DRDY, INPUT);
+  pinMode(PIN_BEAT_LED, OUTPUT);
   SPI.begin();
 
   const Ads1292r::Error err = adc.begin();
@@ -99,6 +108,10 @@ void loop() {
       continue;
     }
     pipeline.push(f.resp * RESP_UNITS_PER_CODE, f.ecg * Ads1292r::ecgMillivoltsPerCode(), f.lead_off);
+  }
+  if (beatLedOn && millis() - beatLedOn >= BEAT_BLINK_MS) {
+    digitalWrite(PIN_BEAT_LED, LOW);
+    beatLedOn = 0;
   }
   if (fifo.dropped() != reported_drops) {
     reported_drops = fifo.dropped();

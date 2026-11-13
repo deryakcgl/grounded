@@ -1,4 +1,4 @@
-"""Per-minute metrics and stress score (rule-based, v1).
+"""Per-minute metrics and stress score (v2: weights learned from data).
 
 For each HRV window (60 s):
   - breathing rate and breathing irregularity (from that minute's breaths)
@@ -7,12 +7,19 @@ For each HRV window (60 s):
 
 The score is relative to the person's OWN normal (no absolute thresholds):
   z = (value - personal median) / personal spread   (median and MAD: robust to outliers)
-  raw = 0.50 * z(-ln RMSSD) + 0.25 * z(heart rate) + 0.25 * z(breathing irregularity)
-  score = 100 / (1 + e^-raw)
+  raw = sum of WEIGHTS[k] * z(k)
+  score = 100 / (1 + e^-raw)          50 = your normal
 
-Why no breathing RATE: in WESAD the rate dropped during stress (talking effect)
-and also during meditation, so rate alone doesn't separate stress. Irregularity does.
-Weights were chosen by hand (v1). Later they will be learned from multi-subject data (ML).
+Weights (v2) come from research/stress_v2.py: logistic regression on 15 WESAD subjects,
+evaluated leave-one-subject-out (14/15 unseen subjects with AUC >= 0.8; v1 had 11/15).
+HRV (RMSSD) has weight 0 on purpose: fitted freely, the model gave HIGH HRV a stress weight,
+because WESAD's stress task is a spoken talk and talking inflates RMSSD. That is a shortcut
+that would fail for silent everyday stress, so HRV may only count in the physiological
+direction (low HRV = more tense) - and with that constraint the data gives it weight 0.
+RMSSD is still measured, stored and shown; it's just not part of this score.
+Limitation: excitement (e.g. laughing) raises heart rate too; the score measures tension /
+arousal, and can't tell why.
+v1 (hand-picked): 0.50 -ln RMSSD, 0.25 heart rate, 0.25 breathing irregularity.
 
 The math lives in pure functions (window_features, baseline_stats, stress_score);
 research/validate_subjects.py uses the SAME functions.
@@ -27,7 +34,7 @@ import numpy as np
 
 import db
 
-WEIGHTS = {"neg_ln_rmssd": 0.50, "hr_bpm": 0.25, "breath_cv": 0.25}
+WEIGHTS = {"hr_bpm": 0.506, "breath_cv": 0.178, "breath_rate": -0.059}   # v2, see above
 WINDOW_S = 60.0
 TS_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 
@@ -71,11 +78,12 @@ def window_features(win_t, rmssd, hr, breath_t, breath_int, hold_t):
     }
 
 
-def baseline_stats(features, mask=None):
+def baseline_stats(features, mask=None, keys=None):
     """Personal normal: (median, spread) per feature. mask: which minutes count as normal.
-    In production: the first days of data. In research: the calibration (baseline) segment."""
+    In production: the first days of data. In research: the calibration (baseline) segment.
+    keys: which features (default: the ones in the score)."""
     stats = {}
-    for k in WEIGHTS:
+    for k in (keys or WEIGHTS):
         x = features[k] if mask is None else features[k][mask]
         med = np.nanmedian(x)
         mad = 1.4826 * np.nanmedian(np.abs(x - med))   # 1.4826: makes MAD equal to std for a normal distribution

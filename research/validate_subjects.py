@@ -8,6 +8,8 @@ For each subject:
   4. The beat detector is compared with an offline reference.
 
 S2 is reported separately: we looked at it while designing the score, so it isn't "unseen".
+Note: since v2, host/metrics.py's weights were fitted on ALL 15 subjects, so this script's AUCs
+are in-sample. The honest numbers for v2 are the leave-one-subject-out ones from stress_v2.py.
 
 Usage: python research/validate_subjects.py
 """
@@ -51,7 +53,10 @@ def run_native(*args):
                           check=True, capture_output=True, text=True).stdout
 
 
-def evaluate(subject):
+def subject_minutes(subject):
+    """Per-minute features (same code as the host) and WESAD labels for one subject.
+    Runs the virtual device (the firmware's C++ code) on the subject's data.
+    Returns (features dict, label per minute); label 0 = mixed window."""
     d = np.load(DATA / f"{subject}_prepared.npz")
     labels, fs = d["labels_resp"], int(d["fs_resp"])
     resp_f, ecg_f = TMP / f"{subject}_resp25.txt", TMP / f"{subject}_ecg250.txt"
@@ -77,6 +82,16 @@ def evaluate(subject):
         i = np.argmax(counts)
         return int(vals[i]) if counts[i] >= 0.8 * len(seg) else 0
     lab = np.array([window_label(t) for t in win_t])
+    resp_f.unlink()
+    ecg_f.unlink()
+    return f, lab
+
+
+def evaluate(subject):
+    f, lab = subject_minutes(subject)
+    d = np.load(DATA / f"{subject}_prepared.npz")
+    ecg_f = TMP / f"{subject}_ecg250.txt"
+    np.savetxt(ecg_f, d["ecg"], fmt="%.9g")
 
     # --- 3. Score: normal from calibration ONLY ---
     calib = lab == 1
@@ -103,7 +118,6 @@ def evaluate(subject):
     raw_polarity = 1 if np.percentile(ecg, 99.5) - np.median(ecg) > \
         np.median(ecg) - np.percentile(ecg, 0.5) else -1
 
-    resp_f.unlink()
     ecg_f.unlink()
 
     s, b, m, a = (lab == 2), (lab == 1), (lab == 4), (lab == 3)
@@ -169,7 +183,7 @@ def main():
                       for r in results])
     ax.set_ylim(0, 1.05)
     ax.set_ylabel("AUC (are stress minutes separated?)")
-    ax.set_title("Stress score v1, per subject (* = subject used in design)")
+    ax.set_title("Stress score, per subject (* = subject used in design; in-sample since v2)")
     ax.legend(loc="lower right", fontsize=8, ncol=5)
     fig.tight_layout()
     fig.savefig(FIGS / "validation_auc.png", dpi=120)

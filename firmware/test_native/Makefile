@@ -1,8 +1,4 @@
-# Builds the firmware libraries on the Mac. -Wdouble-promotion: warns if double is used by accident
-# instead of float (double is very expensive on an STM32 without an FPU).
 CXX      ?= clang++
-# -ffp-contract=off: the Mac (arm64) can fuse multiply+add into one step (FMA), the Cortex-M0+
-# cannot. Turning it off makes both sides produce bit-identical results.
 CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -Wdouble-promotion -ffp-contract=off
 DSP      := ../lib/grounded_dsp
 LED      := ../lib/grounded_led
@@ -28,7 +24,6 @@ ads_test: ads_test.cpp fake_ads1292r.h $(ADS)/ads1292r.cpp $(wildcard $(ADS)/*.h
 pod_sim: pod_sim.cpp fake_ads1292r.h $(POD_SRC) $(wildcard $(ADS)/*.h) $(wildcard $(DSP)/*.h)
 	$(CXX) $(CXXFLAGS) -I$(DSP) -I$(ADS) -o $@ pod_sim.cpp $(POD_SRC)
 
-# The Wokwi custom chip (C) with a stand-in for the Wokwi API, driven by our real driver
 CHIP     := ../grounded_pod/wokwi/ads1292r.chip.c
 wokwi_chip_sim: wokwi_chip_sim.cpp $(CHIP) wokwi_stub/wokwi-api.h $(POD_SRC)
 	clang -std=c11 -O2 -Wall -Wextra -Iwokwi_stub -c -o ads1292r_chip.o $(CHIP)

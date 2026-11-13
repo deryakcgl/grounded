@@ -1,15 +1,3 @@
-"""Step 6d evaluation: how often does text-to-SQL return the right answer?
-
-Execution accuracy: for each question we wrote the correct ("gold") SQL by hand. Both queries
-run on the same database; the model passes if every value in the gold result also appears in
-its result (and it doesn't just dump many rows). Comparing results instead of SQL text is
-fairer: many different queries are correct.
-
-The questions here must not overlap with FEW_SHOT in host/ask.py (that would be leakage).
-Expects the simulated week (S3-S8 on 2026-11-06..11, S2 on 2026-11-12).
-
-Usage: python research/eval_ask.py [--model llama3.2]
-"""
 import argparse
 import math
 import re
@@ -19,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "host"))
-from ask import ask, open_readonly, run_sql  # noqa: E402
+from ask import ask, open_readonly, run_sql
 
 TODAY = "2026-11-12"
 WEEK = f"date(ts) >= date('{TODAY}', '-6 days')"
@@ -58,8 +46,6 @@ HHMM = re.compile(r"^(\d{2}):\d{2}")
 
 
 def cells(rows, expand):
-    """All values in the result. With expand, a timestamp also counts as its date,
-    its 'YYYY-MM-DD HH:MM' and its hour, so '2026-11-08 14:32:03' answers 'which day'."""
     out = set()
     for row in rows:
         for v in row:
@@ -73,7 +59,6 @@ def cells(rows, expand):
 
 
 def contains(pred, gold):
-    """Every gold value is in pred. Numbers match within 1% (53.46 vs ROUND(.., 1) = 53.5)."""
     nums = [p for p in pred if isinstance(p, (int, float))]
     for g in gold:
         if isinstance(g, (int, float)):

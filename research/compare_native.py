@@ -1,11 +1,3 @@
-"""Step 5: compare the C++ detectors (firmware code) with the Python reference.
-
-1. Writes the WESAD data to text files (data/vectors/, not in git).
-2. Builds firmware/test_native and runs the C++ detectors on that data.
-3. Runs the same data through the Python detectors and compares the results.
-
-Run prepare_data.py and gen_filter_coeffs.py first.
-"""
 import subprocess
 import sys
 from pathlib import Path
@@ -25,14 +17,12 @@ VEC.mkdir(exist_ok=True)
 
 subject = sys.argv[1] if len(sys.argv) > 1 else "S2"
 d = np.load(DATA / f"{subject}_prepared.npz")
-resp, ecg = d["resp"], d["ecg"]          # float32: same as on the device
+resp, ecg = d["resp"], d["ecg"]
 
-# --- 1. Write the data as text (9 digits represent float32 losslessly) ---
 resp_file, ecg_file = VEC / f"{subject}_resp25.txt", VEC / f"{subject}_ecg250.txt"
 np.savetxt(resp_file, resp, fmt="%.9g")
 np.savetxt(ecg_file, ecg, fmt="%.9g")
 
-# --- 2. C++: build and run ---
 subprocess.run(["make", "-s", "-C", str(NATIVE)], check=True)
 
 
@@ -49,7 +39,6 @@ cpp_holds = np.array([int(r[1]) for r in cpp_resp if r[0] == "hold_start"])
 cpp_beats = np.array([int(r[1]) for r in cpp_ecg if r[0] == "beat"])
 cpp_rmssd = np.array([float(r[2]) for r in cpp_ecg if r[0] == "hrv"])
 
-# --- 3. Python reference (float64) ---
 resp_f = sosfilt(butter(2, [0.05, 1.0], btype="bandpass", fs=25, output="sos"),
                  resp.astype(np.float64))
 bd = BreathDetector(fs=25)
@@ -69,7 +58,6 @@ py_rmssd = np.array([res[0] for x in np.diff(py_beats) / 250 if (res := hrv.upda
 
 
 def match(a, b, tol=0):
-    """How many events in a have a match in b within +-tol samples."""
     j = np.searchsorted(b, a)
     lo = np.abs(a - b[np.clip(j - 1, 0, len(b) - 1)])
     hi = np.abs(a - b[np.clip(j, 0, len(b) - 1)])

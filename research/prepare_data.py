@@ -1,14 +1,3 @@
-"""Downsamples WESAD chest data to the rates the ADS1292R will use and saves a small file.
-
-- Respiration: 700 Hz -> 25 Hz
-- ECG:         700 Hz -> 250 Hz
-Run once; later scripts read this file instead of the large .pkl.
-
-Usage:
-  python research/prepare_data.py S2                         # from data/S2.pkl
-  python research/prepare_data.py S3 ~/Downloads/WESAD.zip   # straight from the zip (no extraction)
-  python research/prepare_data.py S3 ~/Downloads/WESAD       # from an extracted WESAD folder
-"""
 import pickle
 import sys
 import zipfile
@@ -17,7 +6,7 @@ from pathlib import Path
 import numpy as np
 from scipy.signal import decimate, resample_poly
 
-DATA = Path(__file__).resolve().parent.parent / "data"   # data/ at the project root
+DATA = Path(__file__).resolve().parent.parent / "data"
 
 FS_RAW  = 700
 FS_RESP = 25
@@ -29,7 +18,6 @@ dst = DATA / f"{subject}_prepared.npz"
 
 if source and source.suffix == ".zip":
     zip_path = source
-    # Read the .pkl from inside the zip without extracting it: saves ~1 GB of disk
     member = f"WESAD/{subject}/{subject}.pkl"
     print(f"Loading: {zip_path}:{member} (this takes a while)")
     with zipfile.ZipFile(zip_path) as z, z.open(member) as f:
@@ -45,18 +33,11 @@ resp   = chest["Resp"].flatten().astype(np.float64)
 ecg    = chest["ECG"].flatten().astype(np.float64)
 labels = data["label"].astype(np.int8)
 
-# --- Respiration: 700 -> 25 Hz (factor 28) ---
-# decimate low-pass filters first, then drops samples (to avoid aliasing).
-# scipy recommends at most ~13x per step, so we do 7 x 4 = 28 in two steps.
 resp_25 = decimate(resp,    7, ftype="fir", zero_phase=True)
 resp_25 = decimate(resp_25, 4, ftype="fir", zero_phase=True)
 
-# --- ECG: 700 -> 250 Hz ---
-# 250/700 = 5/14 is not an integer factor; resample_poly upsamples by 5 and downsamples by 14 (filtered).
 ecg_250 = resample_poly(ecg, 5, 14)
 
-# --- Labels ---
-# Labels are categories (1, 2, 4...) and can't be filtered; we just drop samples.
 labels_25  = labels[::FS_RAW // FS_RESP]
 labels_250 = labels[np.arange(len(ecg_250)) * FS_RAW // FS_ECG]
 

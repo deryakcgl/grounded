@@ -1,14 +1,3 @@
-"""Compare the full pod simulation with the plain virtual device, for every subject.
-
-  dsp_test device : WESAD floats -> detectors -> protocol lines            (reference)
-  pod_sim         : WESAD -> 24-bit ADC codes in a simulated ADS1292R -> driver -> FIFO
-                    -> respiration averaged 250 -> 25 Hz -> detectors -> protocol lines
-
-They can't be bit-identical: the ADC rounds every sample to a 24-bit code and the respiration
-average adds float rounding. So events are matched with a tolerance of one sample.
-
-Run prepare_data.py first. Usage: python research/compare_pod.py
-"""
 import subprocess
 import sys
 from pathlib import Path
@@ -17,7 +6,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "host"))
-from protocol import Breath, HoldStart, Hrv, parse  # noqa: E402
+from protocol import Breath, HoldStart, Hrv, parse
 
 NATIVE = ROOT / "firmware/test_native"
 VEC = ROOT / "data/vectors"
@@ -63,11 +52,11 @@ for p in sorted(ROOT.glob("data/S*_prepared.npz"), key=lambda p: int(p.name[1:].
     rf.unlink()
     ef.unlink()
 
-    mb = matched(ref["breath"], got["breath"], 40)       # 1 respiration sample = 40 ms
+    mb = matched(ref["breath"], got["breath"], 40)
     mh = matched(ref["hold"], got["hold"], 40)
     rt, rr = np.array([h[0] for h in ref["hrv"]]), np.array([h[1] for h in ref["hrv"]])
     gt, gr = np.array([h[0] for h in got["hrv"]]), np.array([h[1] for h in got["hrv"]])
-    mv = matched(rt, gt, 4)                               # 1 ECG sample = 4 ms
+    mv = matched(rt, gt, 4)
     n = min(len(rr), len(gr))
     drm = float(np.max(np.abs(rr[:n] - gr[:n]))) if n else 0.0
     worst = min(worst, mb, mh, mv)

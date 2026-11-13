@@ -1,17 +1,3 @@
-"""Evening reflection: a short note about the day, written by a local LLM from the day's data.
-
-Division of labour (important):
-  1. Python computes the day's FACTS (stress periods, calm periods, hourly profile).
-     Numbers are deterministic; the LLM does no arithmetic.
-  2. The LLM (Ollama, fully local: health data never leaves the computer) turns those
-     facts into short, warm prose.
-  3. Check: does every number in the reply appear in the facts? If not, it is flagged as
-     unverified (small models tend to invent numbers).
-
-Usage:
-  python host/reflect.py --date 2026-11-12            # write, store, print
-  python host/reflect.py --date 2026-11-12 --facts    # only show the facts sent to the LLM
-"""
 import argparse
 import json
 import sys
@@ -21,17 +7,17 @@ import db
 from llm import DEFAULT_MODEL, chat, unverified_numbers
 from metrics import compute
 
-HIGH, CALM = 70, 35   # score thresholds: >=70 clearly above normal, <=35 clearly calm
-MIN_EPISODE = 3       # minimum length of a "period" in minutes (single-minute spikes are noise)
+HIGH, CALM = 70, 35
+MIN_EPISODE = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS reflections (
-    date        TEXT PRIMARY KEY,   -- YYYY-MM-DD
+    date        TEXT PRIMARY KEY,
     created_ts  TEXT NOT NULL,
     model       TEXT NOT NULL,
-    facts_json  TEXT NOT NULL,      -- facts given to the LLM (so the reply can be audited later)
+    facts_json  TEXT NOT NULL,
     text        TEXT NOT NULL,
-    unverified  TEXT                -- numbers not found in the facts (empty = clean)
+    unverified  TEXT
 );
 """
 
@@ -50,10 +36,7 @@ Rules:
 - At most 120 words. Plain text, no lists, no headings."""
 
 
-# --- 1. Facts (deterministic) ---
-
 def runs(rows, cond):
-    """Consecutive minutes meeting the condition -> [(start_idx, end_idx), ...]"""
     out, start = [], None
     for i, r in enumerate(rows + [None]):
         ok = r is not None and cond(r)
@@ -92,15 +75,13 @@ def day_facts(conn, date):
     n = len(rows)
     high = runs(rows, lambda r: r["stress"] >= HIGH)
     calm = runs(rows, lambda r: r["stress"] <= CALM)
-    # Most important stress periods: longest x most intense
     high.sort(key=lambda ab: -sum(rows[i]["stress"] for i in range(ab[0], ab[1] + 1)))
-    calm.sort(key=lambda ab: ab[0] - ab[1])   # longest calm period first
+    calm.sort(key=lambda ab: ab[0] - ab[1])
 
     hours = {}
     for r in rows:
         hours.setdefault(r["hour"] + ":00", []).append(r["stress"])
 
-    # Comparison with previous days (if any): the person's own history
     prev = conn.execute("""SELECT AVG(stress) FROM minute_metrics
                            WHERE date(ts) < ? AND date(ts) >= date(?, '-7 days')""",
                         (date, date)).fetchone()[0]
@@ -119,8 +100,6 @@ def day_facts(conn, date):
     }
 
 
-# --- Main flow ---
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", default=datetime.now().strftime("%Y-%m-%d"))
@@ -130,7 +109,7 @@ def main():
 
     conn = db.connect()
     conn.executescript(SCHEMA)
-    compute(conn)                       # make sure per-minute metrics are up to date
+    compute(conn)
     facts = day_facts(conn, args.date)
     if facts is None:
         print(f"No data for {args.date}.")

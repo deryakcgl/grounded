@@ -1,17 +1,3 @@
-// Device -> host protocol: one text line per event.
-// Host counterpart: host/protocol.py (change both together).
-//
-//   B,<t_ms>,<interval_ms>        breath
-//   H,<t_ms>                      breath hold started (t = last breath)
-//   E,<t_ms>,<duration_ms>        breath hold ended
-//   V,<t_ms>,<rmssd_x10>,<hr_x10> HRV window (60 s); x10 = 0.1 resolution
-//   L,<t_ms>,<bits>               electrode contact changed; bits = ADS1292R LOFF_STAT[4:0],
-//                                 0 = all connected (sent once at start, then on every change)
-//
-// t_ms: milliseconds since the device started. The host adds wall-clock time.
-// Why integers only? Printing floats on the device pulls in ~7 KB of double-math library
-// (see dsp_target_test). Why no individual beats? Sending every beat over Bluetooth
-// drains the battery; the device computes HRV and the host only receives the result.
 #pragma once
 #include <stdint.h>
 #include <stdio.h>

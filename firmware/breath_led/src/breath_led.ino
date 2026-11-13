@@ -1,17 +1,9 @@
-// Desk breathing LED.
-//   Idle:     faint glow.
-//   Guiding:  the LED rises and falls with a breathing rhythm for N cycles, then goes idle.
-// A session starts from the host (serial command, see grounded_led/led_protocol.h) or with
-// the button (idle: start; guiding: next rhythm).
-//
-// This file is only the hardware glue: serial characters, the button and the PWM output.
-// The behaviour lives in lib/grounded_led (LedDevice), which the Mac's virtual LED also runs.
 #include "led_device.h"
 
 const uint32_t LED_PIN = D6;
 const uint32_t PWM_FREQ_HZ = 1000;
-const uint32_t PWM_MAX = 4095;   // 12-bit resolution - must match RESOLUTION_12B below
-const uint32_t UPDATE_MS = 10;   // LED refresh: 5-20 ms looks smooth
+const uint32_t PWM_MAX = 4095;
+const uint32_t UPDATE_MS = 10;
 const uint32_t BUTTON_PIN = D2;
 const uint32_t DEBOUNCE_MS = 30;
 
@@ -43,7 +35,6 @@ void setupPwm() {
   pwmTimer->resume();
 }
 
-// level is perceptual brightness 0..1; squaring approximates the eye's gamma
 void writeLevel(float level) {
   float corrected = level * level;
   uint32_t ccr = (uint32_t)(corrected * PWM_MAX + 0.5f);

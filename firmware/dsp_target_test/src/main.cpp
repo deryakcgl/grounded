@@ -1,8 +1,3 @@
-// On-target test of grounded_dsp on the STM32.
-// 1. Calibration: how fast does the core really run (in Wokwi or on hardware)?
-// 2. Cost of single operations (soft-float, integer division): where does time go?
-// 3. Runs WESAD excerpts embedded in flash through the detectors, compares results with
-//    the C++ run on the Mac, measures time per sample, and simulates a sample FIFO.
 #include <Arduino.h>
 
 #include "beat_detector.h"
@@ -11,23 +6,15 @@
 
 #define COUNT(a) (int)(sizeof(a) / sizeof((a)[0]))
 
-// Real-time budget: on average, a sample must be processed before the next one arrives.
-static const uint32_t RESP_BUDGET_US = 1000000 / RESP_FS;   // 40000 us
-static const uint32_t ECG_BUDGET_US = 1000000 / ECG_FS;     // 4000 us
+static const uint32_t RESP_BUDGET_US = 1000000 / RESP_FS;
+static const uint32_t ECG_BUDGET_US = 1000000 / ECG_FS;
 
-// --- 1. Calibration ---
-// A loop whose cycle count we know exactly: SUBS (1 cycle) + taken BNE (2 cycles) on a
-// Cortex-M0+ = 3 cycles per iteration (plus possible flash wait states).
-// Wokwi is not cycle-accurate: it ran this loop ~10x slower than 48 MHz. Measured times are
-// converted to cycles with this factor, then to "us on real hardware at 48 MHz" (an estimate:
-// it assumes the simulator slows every instruction by the same factor).
-static uint32_t g_cyc_per_us_x100 = 4800;   // measured core cycles per microsecond, x100
+static uint32_t g_cyc_per_us_x100 = 4800;
 
 static void calibrate() {
-  const uint32_t iters = 480000;   // 1.44 M cycles = 30 ms at 48 MHz
+  const uint32_t iters = 480000;
   uint32_t n = iters;
   const uint32_t t0 = micros();
-  // The toolchain assembles inline asm in the old "divided" syntax; switch to unified for SUBS.
   __asm volatile(".syntax unified \n 1: subs %0, %0, #1 \n bne 1b \n .syntax divided"
                  : "+l"(n));
   const uint32_t us = micros() - t0;
@@ -43,9 +30,6 @@ static void calibrate() {
 
 static uint32_t to_cycles(uint32_t us) { return (uint32_t)((uint64_t)us * g_cyc_per_us_x100 / 100); }
 
-// --- 2. Cost of single operations ---
-// volatile: forces the compiler to really load, compute and store each time,
-// instead of computing the result once at compile time.
 static volatile float vf_a = 1.2345f, vf_b = 0.9876f, vf_r;
 static volatile int32_t vi_a = 123457, vi_b = 37, vi_r;
 static const int OPS_N = 2000;
@@ -62,7 +46,7 @@ static void report_op(const char* name, uint32_t us, uint32_t base_us) {
   Serial.print(name);
   Serial.print(": ");
   const uint32_t dt = us > base_us ? us - base_us : 0;
-  Serial.print(to_cycles(dt) / OPS_N);   // cycles per operation
+  Serial.print(to_cycles(dt) / OPS_N);
   Serial.println(" cycles");
 }
 
@@ -78,8 +62,6 @@ static void op_costs() {
   report_op("int32 mod   a % b", TIME_LOOP(vi_r = vi_a % vi_b), base);
   report_op("micros()         ", TIME_LOOP(vi_r = (int32_t)micros()), base);
 }
-
-// --- 3. Detectors ---
 
 static bool check(const char* name, const int32_t* found, int n_found,
                   const int32_t* expected, int n_expected) {
@@ -99,16 +81,11 @@ static bool check(const char* name, const int32_t* found, int n_found,
   return ok;
 }
 
-// Timing statistics plus a FIFO simulation.
-// On the device, a data-ready interrupt will push each sample into a FIFO and the main loop
-// will process it. Sample i arrives at i * budget; it starts when it has arrived AND the
-// previous one is done. With the measured durations we can compute how deep the FIFO
-// must be. If the AVERAGE fits the budget, a rare slow sample is absorbed by the FIFO.
 struct Timing {
   uint32_t budget_us;
   uint32_t total = 0, worst = 0;
-  uint32_t finish = 0;       // virtual time when the previous sample finished
-  uint32_t max_queue = 0;    // FIFO depth needed (samples)
+  uint32_t finish = 0;
+  uint32_t max_queue = 0;
   int n = 0;
 
   explicit Timing(uint32_t b) : budget_us(b) {}
@@ -118,7 +95,7 @@ struct Timing {
     if (dt > worst) worst = dt;
     const uint32_t arrive = (uint32_t)n * budget_us;
     const uint32_t start = finish > arrive ? finish : arrive;
-    const uint32_t queue = (start - arrive) / budget_us + 1;   // waiting, incl. this one
+    const uint32_t queue = (start - arrive) / budget_us + 1;
     if (queue > max_queue) max_queue = queue;
     finish = start + dt;
     n++;
@@ -132,8 +109,6 @@ struct Timing {
     Serial.print(worst);
     Serial.print(" us (budget ");
     Serial.print(budget_us);
-    // Percentage as integer permille. Serial.print(float) uses double UNDER THE HOOD
-    // and pulls ~7 KB of double-math library into flash for a single line!
     const uint32_t permille = (uint32_t)((uint64_t)total * 1000u / ((uint64_t)n * budget_us));
     Serial.print(" us, avg load ");
     Serial.print(permille / 10);
@@ -141,7 +116,6 @@ struct Timing {
     Serial.print(permille % 10);
     Serial.print("%), FIFO depth needed: ");
     Serial.println(max_queue);
-    // The same, in cycles and estimated real-hardware time (48 cycles = 1 us at 48 MHz)
     const uint32_t avg_cyc = to_cycles(total) / (uint32_t)n, worst_cyc = to_cycles(worst);
     Serial.print("  ~ avg ");
     Serial.print(avg_cyc);
@@ -163,7 +137,6 @@ void setup() {
   op_costs();
   Serial.println();
 
-  // --- Respiration ---
   static int32_t breaths[COUNT(EXP_BREATHS) + 8];
   int n_breaths = 0;
   Timing resp_t(RESP_BUDGET_US);
@@ -180,7 +153,6 @@ void setup() {
   const bool ok_resp = check("Breath", breaths, n_breaths, EXP_BREATHS, COUNT(EXP_BREATHS));
   resp_t.report("Breath");
 
-  // --- ECG ---
   static int32_t beats[COUNT(EXP_BEATS) + 8];
   int n_beats = 0;
   Timing ecg_t(ECG_BUDGET_US);

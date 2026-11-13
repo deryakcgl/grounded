@@ -3,7 +3,7 @@
 const Rhythm RHYTHMS[] = {
     {"Box 4-4-4-4", {4000, 4000, 4000, 4000}},
     {"4-7-8", {4000, 7000, 8000, 0}},
-    {"Relax 4-0-6-0", {4000, 0, 6000, 0}},   // 6 breaths/min, long exhale
+    {"Relax 4-0-6-0", {4000, 0, 6000, 0}},
 };
 const uint8_t RHYTHM_COUNT = sizeof(RHYTHMS) / sizeof(RHYTHMS[0]);
 
@@ -23,13 +23,10 @@ bool BreathPacer::start(uint8_t rhythm, uint16_t cycles, uint32_t now_ms) {
 uint8_t BreathPacer::update(uint32_t now_ms) {
   if (!active_) return 0;
   uint8_t events = 0;
-  // 'while', not 'if': zero-length phases (HOLD_IN in Relax) are passed in the same call.
-  // 'phase_start_ += duration' instead of '= now_ms': the rhythm doesn't drift by however
-  // late this function happens to be called.
   while (now_ms - phase_start_ >= duration()) {
     phase_start_ += duration();
-    phase_ = (Phase)(phase_ + 1);    // C++ has no ++ for enums
-    if (phase_ == PHASE_COUNT) {     // wrap with a compare, not '%' (no hardware divide)
+    phase_ = (Phase)(phase_ + 1);
+    if (phase_ == PHASE_COUNT) {
       phase_ = INHALE;
       done_++;
       events |= EV_CYCLE;

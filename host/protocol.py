@@ -1,8 +1,3 @@
-"""Parses the device -> host protocol.
-
-Device counterpart: firmware/lib/grounded_dsp/protocol.h (change both together).
-One event per line; times are milliseconds since the device started.
-"""
 from dataclasses import dataclass
 
 
@@ -26,7 +21,7 @@ class HoldEnd:
 @dataclass
 class LeadOff:
     t_ms: int
-    bits: int          # ADS1292R LOFF_STAT[4:0]; 0 = all electrodes connected
+    bits: int
 
     @property
     def connected(self):
@@ -41,11 +36,6 @@ class Hrv:
 
 
 def parse(line):
-    """Turns one line into an event object. Malformed or unknown line: None.
-
-    On a real link (serial port, Bluetooth) lines can arrive truncated or corrupted;
-    we skip them instead of raising, so a single bad line doesn't stop the recording.
-    """
     parts = line.strip().split(",")
     try:
         kind, nums = parts[0], [int(p) for p in parts[1:]]

@@ -1,6 +1,3 @@
-// Simulated ADS1292R for testing the driver on the Mac (test only, not firmware).
-// It plays the chip's side of the SPI bus and records every datasheet rule the driver breaks
-// (SBAS502C section numbers in the messages). A real chip would just misbehave silently.
 #pragma once
 #include <stdint.h>
 #include <stdio.h>
@@ -12,19 +9,17 @@
 
 class FakeAds1292r : public Ads1292rBus {
  public:
-  // Register reset values (Table 16)
   static constexpr uint8_t RESET_VALUES[ads::REG_COUNT] = {0x73, 0x02, 0x80, 0x10, 0x00, 0x00,
                                                            0x00, 0x00, 0x00, 0x00, 0x02, 0x0C};
   uint8_t regs[ads::REG_COUNT];
-  uint8_t id = ads::ID_ADS1292R;    // change to simulate another part
-  uint8_t stuck_low = 0;            // bits that always read 0 (simulates a broken MISO line)
-  bool rdatac = true;               // the chip powers up in RDATAC mode (§8.5.2.7)
+  uint8_t id = ads::ID_ADS1292R;
+  uint8_t stuck_low = 0;
+  bool rdatac = true;
   bool converting = false;
   std::vector<std::string> violations;
 
   FakeAds1292r() { resetRegisters(); }
 
-  // --- The "analog" side: a conversion finished, DRDY falls ---
   void convert(int32_t ch1, int32_t ch2, uint8_t lead_off = 0) {
     const uint32_t status = 0xC00000u | ((uint32_t)(lead_off & 0x1F) << 15);
     put24(frame_, status);
@@ -35,7 +30,6 @@ class FakeAds1292r : public Ads1292rBus {
   }
   int frames_ready_ = 0;
 
-  // --- Ads1292rBus: the chip's side of SPI ---
   void select(bool active) override {
     if (active) {
       cs_ = true;
@@ -92,7 +86,7 @@ class FakeAds1292r : public Ads1292rBus {
     resetRegisters();
     rdatac = true;
     converting = false;
-    busy_us_ = 70;   // RESET takes 9 tMOD (8.5.2.3)
+    busy_us_ = 70;
   }
 
   void checkMustBits(uint8_t reg, uint8_t v) {
@@ -115,7 +109,7 @@ class FakeAds1292r : public Ads1292rBus {
   uint8_t step(uint8_t in) {
     switch (state_) {
       case OPCODE:
-        if (rdatac && in == 0x00) {          // clocking out data in RDATAC mode
+        if (rdatac && in == 0x00) {
           state_ = DATA_READ;
           if (frames_ready_ == 0) violate("data read without a new DRDY");
           frames_ready_ = 0;
@@ -162,14 +156,12 @@ class FakeAds1292r : public Ads1292rBus {
           violate("write to read-only ID register");
         } else if (addr_ < ads::REG_COUNT) {
           checkMustBits(addr_, in);
-          // LOFF_STAT[4:0] are read-only status bits
           regs[addr_] = addr_ == ads::LOFF_STAT ? (uint8_t)((in & 0xE0) | (regs[addr_] & 0x1F)) : in;
         }
         addr_++;
         if (--count_ == 0) state_ = IGNORE;
         return 0;
       case DATA_READ:
-        // Multiple readback: after the last byte the frame repeats (8.5.1.5)
         if (frame_pos_ >= 9) frame_pos_ = 0;
         return frame_[frame_pos_++];
       case IGNORE:

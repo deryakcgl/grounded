@@ -14,7 +14,6 @@ void PodPipeline::push(float resp, float ecg, uint8_t lead_off) {
     send(proto_lead_off(line_, sizeof line_, sample_to_ms(n, ECG_FS), lead_off));
   }
 
-  // --- ECG ---
   const int32_t b = beat_.update(ecg);
   if (b >= 0) {
     if (on_beat_) on_beat_();
@@ -24,7 +23,6 @@ void PodPipeline::push(float resp, float ecg, uint8_t lead_off) {
     prev_beat_ = b;
   }
 
-  // --- Respiration: one 25 Hz sample per 10 frames ---
   float r;
   if (!resp_dec_.push(resp, r)) return;
   const uint8_t ev = breath_.update(r);

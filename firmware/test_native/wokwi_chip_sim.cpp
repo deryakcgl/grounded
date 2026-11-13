@@ -1,12 +1,3 @@
-// Runs the Wokwi ADS1292R custom chip (grounded_pod/wokwi/ads1292r.chip.c) on the Mac, against
-// our real driver and PodPipeline. Implements just enough of the Wokwi Chips API: pins, SPI
-// (byte-wise, buffer = TX and RX), timers, simulated time and attributes.
-//
-// Checks before trying it in Wokwi: the driver starts the chip without breaking a rule, and the
-// pipeline finds the heart and breathing rates the chip's sliders are set to.
-//
-// Usage: ./wokwi_chip_sim [seconds] [heartRate] [breathRate] [hrvDepth] [holdFrom-holdTo] [electrodeContact]
-//   holdFrom-holdTo: hold the breath between these seconds, like moving the slider, e.g. 60-80
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,7 +10,6 @@
 #include "pod_pipeline.h"
 #include "wokwi-api.h"
 
-// ---------------- Wokwi API on the Mac ----------------
 static uint64_t g_now_ns = 0;
 static std::vector<std::string> g_pin_names;
 static std::vector<uint32_t> g_pin_level;
@@ -82,7 +72,6 @@ static pin_t pin_by_name(const char* name) {
   exit(1);
 }
 
-// The MCU drives an input pin: update the level, call the chip's watch callback on a change
 static void drive(pin_t pin, uint32_t value) {
   if (g_pin_level[pin] == value) return;
   g_pin_level[pin] = value;
@@ -90,7 +79,6 @@ static void drive(pin_t pin, uint32_t value) {
   if (it != g_watch.end()) it->second.pin_change(it->second.user_data, pin, value);
 }
 
-// Advance simulated time, firing due timers in order
 static void advance_ns(uint64_t ns) {
   const uint64_t end = g_now_ns + ns;
   for (;;) {
@@ -106,15 +94,14 @@ static void advance_ns(uint64_t ns) {
   g_now_ns = end;
 }
 
-// ---------------- The MCU side: our driver over this "bus" ----------------
 class ChipBus : public Ads1292rBus {
  public:
   void select(bool active) override { drive(pin_by_name("CS"), active ? LOW : HIGH); }
   uint8_t transfer(uint8_t out) override {
-    advance_ns(8000);                       // one byte at 1 MHz
-    if (!g_spi_buf) return 0xFF;            // chip not listening (CS high): bus floats high
-    const uint8_t miso = g_spi_buf[0];      // what the chip shifted out
-    g_spi_buf[0] = out;                     // what it received
+    advance_ns(8000);
+    if (!g_spi_buf) return 0xFF;
+    const uint8_t miso = g_spi_buf[0];
+    g_spi_buf[0] = out;
     g_spi.done(g_spi.user_data, g_spi_buf, 1);
     return miso;
   }
@@ -125,7 +112,56 @@ class ChipBus : public Ads1292rBus {
 static std::string g_out;
 static void capture(const char* text, size_t len) { g_out.append(text, len); }
 
+struct Range { int32_t lo[2] = {INT32_MAX, INT32_MAX}, hi[2] = {INT32_MIN, INT32_MIN}; int invalid = 0; };
+static Range collect(Ads1292r& adc, int n, int skip) {
+  Range r;
+  for (int got = 0; got < n + skip;) {
+    advance_ns(50000);
+    if (!g_drdy_fell) continue;
+    g_drdy_fell = false;
+    Ads1292r::Frame f;
+    adc.readFrame(f);
+    if (got++ < skip) continue;
+    if (!f.valid) { r.invalid++; continue; }
+    const int32_t v[2] = {f.resp, f.ecg};
+    for (int c = 0; c < 2; c++) {
+      if (v[c] < r.lo[c]) r.lo[c] = v[c];
+      if (v[c] > r.hi[c]) r.hi[c] = v[c];
+    }
+  }
+  return r;
+}
+
+static int selftest() {
+  chip_init();
+  ChipBus bus;
+  Ads1292r adc(bus);
+  if (adc.begin() != Ads1292r::OK) { printf("begin failed\n"); return 1; }
+  uint8_t regs[ads::REG_COUNT];
+  adc.readRegisters(regs);
+  printf("registers:");
+  for (int i = 0; i < ads::REG_COUNT; i++) printf(" %02X", regs[i]);
+  printf("\n");
+  if (adc.startTestSignal() != Ads1292r::OK) { printf("test signal setup failed\n"); return 1; }
+  g_drdy_fell = false;
+  const Range r = collect(adc, 750, ads::SETTLE_FRAMES);
+  bool ok = r.invalid == 0;
+  const char* names[2] = {"CH1 (resp)", "CH2 (ECG) "};
+  for (int c = 0; c < 2; c++) {
+    const int32_t pp = r.hi[c] - r.lo[c];
+    const bool pass = Ads1292r::testSignalOk(pp, 6);
+    ok &= pass;
+    printf("test signal %s: min %d max %d, peak-to-peak %d (expected %d) %s\n", names[c], r.lo[c],
+           r.hi[c], pp, 2 * Ads1292r::testSignalCodes(6), pass ? "PASS" : "FAIL");
+  }
+  if (adc.startNormal() != Ads1292r::OK) { printf("back to normal failed\n"); return 1; }
+  const Range n = collect(adc, 500, ads::SETTLE_FRAMES);
+  printf("electrodes again: ECG peak-to-peak %d codes (a real ECG, not the test square)\n", n.hi[1] - n.lo[1]);
+  return ok ? 0 : 1;
+}
+
 int main(int argc, char** argv) {
+  if (argc > 1 && strcmp(argv[1], "selftest") == 0) return selftest();
   const double seconds = argc > 1 ? atof(argv[1]) : 180;
   if (argc > 2) g_attr_override["heartRate"] = (uint32_t)atoi(argv[2]);
   if (argc > 3) g_attr_override["breathRate"] = (uint32_t)atoi(argv[3]);
@@ -134,7 +170,7 @@ int main(int argc, char** argv) {
   if (argc > 5) sscanf(argv[5], "%lf-%lf", &hold_from, &hold_to);
   if (argc > 6) g_attr_override["electrodeContact"] = (uint32_t)atoi(argv[6]);
 
-  chip_init();                              // prints to stdout like the Chips Console
+  chip_init();
   ChipBus bus;
   Ads1292r adc(bus);
   const Ads1292r::Error err = adc.begin();
@@ -148,8 +184,8 @@ int main(int argc, char** argv) {
   while (hold_attr < g_attr_name.size() && g_attr_name[hold_attr] != "holdBreath") hold_attr++;
   while (g_now_ns < (uint64_t)(seconds * 1e9)) {
     const double t = g_now_ns / 1e9;
-    g_attr_value[hold_attr] = (t >= hold_from && t < hold_to) ? 1 : 0;   // the "slider"
-    advance_ns(50000);                      // 50 us steps: react to DRDY like an interrupt
+    g_attr_value[hold_attr] = (t >= hold_from && t < hold_to) ? 1 : 0;
+    advance_ns(50000);
     if (!g_drdy_fell) continue;
     g_drdy_fell = false;
     Ads1292r::Frame f;
@@ -160,7 +196,6 @@ int main(int argc, char** argv) {
     pipeline.push(f.resp * 1e-5f, f.ecg * Ads1292r::ecgMillivoltsPerCode(), f.lead_off);
   }
 
-  // Summarise the protocol lines
   int breaths = 0, holds = 0;
   std::string lead_off;
   double hr_sum = 0, rmssd_sum = 0;

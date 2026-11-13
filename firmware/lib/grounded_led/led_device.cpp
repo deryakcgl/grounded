@@ -26,7 +26,6 @@ void LedDevice::onChar(char c, uint32_t now_ms) {
 void LedDevice::handle(const LedCommand& cmd, uint32_t now_ms) {
   switch (cmd.type) {
     case LedCommand::GUIDE:
-      // Check first, so a bad command doesn't end a session that is running fine
       if (cmd.rhythm >= RHYTHM_COUNT) {
         sendText("!,unknown rhythm\n");
         return;
@@ -53,7 +52,6 @@ void LedDevice::handle(const LedCommand& cmd, uint32_t now_ms) {
 }
 
 void LedDevice::onButton(uint32_t now_ms) {
-  // Idle: start the last used rhythm. Guiding: switch to the next rhythm.
   if (pacer_.active()) {
     next_rhythm_ = pacer_.rhythm() + 1;
     if (next_rhythm_ == RHYTHM_COUNT) next_rhythm_ = 0;

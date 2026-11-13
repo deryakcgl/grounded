@@ -1,20 +1,4 @@
-"""Stress score v2: learn the weights from data, evaluated leave-one-subject-out (LOSO).
-
-v1 used hand-picked weights (0.50 -ln RMSSD, 0.25 heart rate, 0.25 breathing irregularity).
-v2 learns them with logistic regression on PERSONAL z-scores (each feature relative to that
-person's own calibration minutes, exactly like the host does).
-
-Honest evaluation: for each of the 15 subjects, the model is trained on the other 14 and tested
-on the one it never saw - like a new user of the product. Compared with:
-  v1        the current hand-made score
-  HR only   heart-rate z-score alone (the single best feature in the validation)
-If v2 can't beat "HR only", the learned model adds nothing.
-
-Caveat: the feature list was chosen after looking at this data (we saw RMSSD fail while people
-were talking), so even LOSO numbers are a little optimistic.
-
-Usage: python research/stress_v2.py        (runs the virtual device for all subjects, ~1 min)
-"""
+import subprocess
 import sys
 from pathlib import Path
 
@@ -24,34 +8,68 @@ import matplotlib.pyplot as plt
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(ROOT / "host"))
-from metrics import WEIGHTS as V1_WEIGHTS, baseline_stats  # noqa: E402
-from validate_subjects import DATA, auc, subject_minutes  # noqa: E402
+from metrics import baseline_stats, window_features
+from protocol import Breath, HoldStart, Hrv, parse
+
+DATA = ROOT / "data"
+NATIVE = ROOT / "firmware/test_native"
+TMP = DATA / "vectors"
+V1_WEIGHTS = {"neg_ln_rmssd": 0.50, "hr_bpm": 0.25, "breath_cv": 0.25}
+
+
+def auc(pos, neg):
+    pos, neg = np.asarray(pos), np.asarray(neg)
+    pos, neg = pos[~np.isnan(pos)], neg[~np.isnan(neg)]
+    if len(pos) == 0 or len(neg) == 0:
+        return np.nan
+    gt = (pos[:, None] > neg[None, :]).sum() + 0.5 * (pos[:, None] == neg[None, :]).sum()
+    return gt / (len(pos) * len(neg))
+
+
+def subject_minutes(subject):
+    d = np.load(DATA / f"{subject}_prepared.npz")
+    labels, fs = d["labels_resp"], int(d["fs_resp"])
+    TMP.mkdir(exist_ok=True)
+    resp_f, ecg_f = TMP / f"{subject}_resp25.txt", TMP / f"{subject}_ecg250.txt"
+    np.savetxt(resp_f, d["resp"], fmt="%.9g")
+    np.savetxt(ecg_f, d["ecg"], fmt="%.9g")
+    out = subprocess.run([str(NATIVE / "dsp_test"), "device", str(resp_f), str(ecg_f)],
+                         check=True, capture_output=True, text=True).stdout
+    resp_f.unlink()
+    ecg_f.unlink()
+
+    events = [parse(line) for line in out.splitlines()]
+    hrv = [e for e in events if isinstance(e, Hrv)]
+    br = [e for e in events if isinstance(e, Breath)]
+    holds = [e for e in events if isinstance(e, HoldStart)]
+    win_t = np.array([e.t_ms / 1000 for e in hrv])
+    f = window_features(win_t, [e.rmssd_ms for e in hrv], [e.hr_bpm for e in hrv],
+                        [e.t_ms / 1000 for e in br], [e.interval_ms / 1000 for e in br],
+                        [e.t_ms / 1000 for e in holds])
+
+    def window_label(t1):
+        seg = labels[int(max(0, t1 - 60) * fs):int(t1 * fs)]
+        vals, counts = np.unique(seg, return_counts=True)
+        i = np.argmax(counts)
+        return int(vals[i]) if counts[i] >= 0.8 * len(seg) else 0
+    return f, np.array([window_label(t) for t in win_t])
 
 FEATURES = ["neg_ln_rmssd", "hr_bpm", "breath_cv", "breath_rate"]
-LAMBDA = 1.0          # L2 penalty: keeps weights small unless the data clearly needs them
+LAMBDA = 1.0
 STATES = {1: "baseline", 3: "amusement", 4: "meditation"}
 
 
 def personal_z(f, lab):
-    """Feature matrix of z-scores against the person's calibration minutes (label 1).
-    Missing values (too few breaths) become 0 = 'like your normal'."""
     stats = baseline_stats(f, lab == 1, keys=FEATURES)
     return np.column_stack([np.nan_to_num((f[k] - stats[k][0]) / stats[k][1]) for k in FEATURES])
 
 
 def fit_logistic(X, y, lam=LAMBDA):
-    """L2-regularised logistic regression by Newton's method (IRLS).
-
-    p = sigmoid(b + X w). Each Newton step solves H step = gradient, where H is the curvature
-    of the loss; for this convex loss ~10 steps reach the exact optimum.
-    Stress minutes are rare (~1 in 5), so both classes get the same total weight; otherwise the
-    model could do well by mostly ignoring stress.
-    """
     sw = np.where(y == 1, 0.5 / y.sum(), 0.5 / (1 - y).sum()) * len(y)
-    Xb = np.column_stack([np.ones(len(X)), X])           # first column: intercept
+    Xb = np.column_stack([np.ones(len(X)), X])
     w = np.zeros(Xb.shape[1])
     reg = lam * np.eye(len(w))
-    reg[0, 0] = 0.0                                      # don't shrink the intercept
+    reg[0, 0] = 0.0
     for _ in range(50):
         p = 1.0 / (1.0 + np.exp(-Xb @ w))
         grad = Xb.T @ (sw * (p - y)) + reg @ w
@@ -64,6 +82,7 @@ def fit_logistic(X, y, lam=LAMBDA):
 
 
 def main():
+    subprocess.run(["make", "-s", "-C", str(NATIVE), "dsp_test"], check=True)
     print("Building per-minute features for all subjects (virtual device)...")
     subjects = sorted((p.name.split("_")[0] for p in DATA.glob("S*_prepared.npz")),
                       key=lambda s: int(s[1:]))
@@ -75,9 +94,6 @@ def main():
 
     v1 = np.array([V1_WEIGHTS.get(k, 0.0) for k in FEATURES])
     hr = np.array([1.0 if k == "hr_bpm" else 0.0 for k in FEATURES])
-    # "v2 safe": the same fit, but HRV may only push the score UP when it is LOW (physiology).
-    # Unconstrained, the weight comes out negative (see below); with one linear constraint on a
-    # convex problem the optimum then sits on the boundary, weight = 0 - i.e. fit without it.
     safe = [i for i, k in enumerate(FEATURES) if k != "neg_ln_rmssd"]
     methods = {"v1": [], "HR only": [], "v2": [], "v2 safe": []}
     fold_w, fold_w_safe = [], []
@@ -93,19 +109,17 @@ def main():
         fold_w_safe.append(w_safe)
         Z, lab = data[test]
         for name, weights in (("v1", v1), ("HR only", hr), ("v2", w), ("v2 safe", w_safe)):
-            score = Z @ weights                          # ranking only: intercept/sigmoid don't matter
+            score = Z @ weights
             stress = score[lab == 2]
             row = {k: auc(stress, score[lab == k]) for k in STATES}
             row["others"] = auc(stress, score[lab != 2])
             methods[name].append(row)
 
-    # --- Per subject ---
     print(f"\nAUC stress vs ALL other minutes, per unseen subject (model trained on the other 14):")
     print(f"{'Subj':<6}" + "".join(f"{m:>9}" for m in methods))
     for i, s in enumerate(subjects):
         print(f"{s:<6}" + "".join(f"{methods[m][i]['others']:>9.2f}" for m in methods))
 
-    # --- Summary ---
     print(f"\n{'':<24}" + "".join(f"{m:>18}" for m in methods))
     for key, label in (("others", "stress vs all others"), (1, "stress vs baseline"),
                        (3, "stress vs amusement"), (4, "stress vs meditation")):
@@ -123,7 +137,6 @@ def main():
         print(f"  {k:<14}{W[:, i].mean():>+9.3f} +-{W[:, i].std():.3f}"
               f"{WS[:, i].mean():>+9.3f} +-{WS[:, i].std():.3f}")
 
-    # --- Final model on all subjects: the weights for the product ---
     X = np.vstack([data[s][0] for s in subjects])
     y = np.concatenate([(data[s][1] == 2).astype(float) for s in subjects])
     b, ws = fit_logistic(X[:, safe], y)
@@ -131,7 +144,6 @@ def main():
     print("  WEIGHTS = {" + ", ".join(f'"{FEATURES[i]}": {v:.3f}' for i, v in zip(safe, ws)) + "}")
     print(f"  (intercept {b:+.2f} is not used: the product keeps 50 = personal normal)")
 
-    # --- Figure ---
     fig, ax = plt.subplots(figsize=(13, 4.5))
     x = np.arange(len(subjects))
     for off, m, color in ((-0.3, "v1", "tab:gray"), (-0.1, "HR only", "tab:orange"),

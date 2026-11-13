@@ -1,18 +1,13 @@
-# Python
 .venv/
 __pycache__/
 *.pyc
 
-# Data (licensed and large; never commit)
 data/
 *.pkl
 *.zip
 
-# macOS
 .DS_Store
 
-
-# Compiled test program
 firmware/test_native/dsp_test
 firmware/test_native/led_test
 firmware/test_native/led_sim
@@ -20,8 +15,6 @@ firmware/test_native/ads_test
 firmware/test_native/pod_sim
 firmware/test_native/wokwi_chip_sim
 
-# PlatformIO build output
 .pio/
 
-# Test data generated from WESAD (license: no redistribution)
 firmware/dsp_target_test/include/test_vectors.h

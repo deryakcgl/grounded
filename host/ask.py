@@ -1,23 +1,3 @@
-"""Ask questions about your data in plain English (text-to-SQL with a local LLM).
-
-Flow:
-  question -> LLM writes ONE SQLite query -> query runs in a locked-down connection
-           -> (on error: the error goes back to the LLM, up to MAX_RETRIES)
-           -> LLM answers from the returned rows -> invented-number check
-
-The LLM's SQL is never trusted. Three independent guards:
-  1. The database is opened READ-ONLY (SQLite itself refuses writes).
-  2. An authorizer: SQLite asks us about every action the query would take;
-     only SELECT and reading the allowed tables is permitted (no sqlite_master,
-     no ATTACH, no PRAGMA, no writes).
-  3. Limits: queries are aborted after QUERY_TIMEOUT_S, and at most MAX_ROWS rows are read.
-(sqlite3's execute() also refuses more than one statement per call.)
-
-Usage:
-  python host/ask.py "Which day this week was the most stressful?"
-  python host/ask.py --sql "..."          # also print the generated SQL
-  python host/ask.py                      # interactive
-"""
 import argparse
 import re
 import sqlite3
@@ -69,8 +49,6 @@ Rules:
 - If the question cannot be answered from these tables, return: SELECT 'cannot answer' AS error;
 - Reply with only the SQL inside a ```sql block, no explanation."""
 
-# Worked examples help small models a lot. They must NOT overlap with the evaluation
-# questions in research/eval_ask.py, otherwise the score would be inflated (leakage).
 FEW_SHOT = [
     ("What was my average heart rate yesterday?",
      "SELECT ROUND(AVG(hr_bpm), 1) AS avg_hr FROM minute_metrics "
@@ -88,10 +66,7 @@ Stress score: 50 = the user's normal, >= 70 = stressed, <= 35 = calm. HRV (RMSSD
 No medical advice. If the result is empty or says 'cannot answer', say you don't have data for that."""
 
 
-# --- 1. LLM -> SQL ---
-
 def extract_sql(text):
-    """Takes the SQL out of the reply (```sql ... ``` block, or the whole reply)."""
     m = re.search(r"```(?:sql)?\s*(.*?)```", text, re.S | re.I)
     return (m.group(1) if m else text).strip()
 
@@ -102,23 +77,17 @@ def generate_sql(question, today, model, history=()):
         msgs += [{"role": "user", "content": q},
                  {"role": "assistant", "content": f"```sql\n{sql.format(today=today)}\n```"}]
     msgs.append({"role": "user", "content": question})
-    msgs += list(history)                    # earlier failed attempts and their errors
-    return extract_sql(chat(msgs, model=model, temperature=0.0))   # 0: SQL should be deterministic
+    msgs += list(history)
+    return extract_sql(chat(msgs, model=model, temperature=0.0))
 
-
-# --- 2. Locked-down execution ---
 
 def _authorizer(action, arg1, arg2, dbname, source):
-    """Called by SQLite for every action in the query while it is compiled."""
     if action == sqlite3.SQLITE_SELECT:
         return sqlite3.SQLITE_OK
-    if action == sqlite3.SQLITE_READ:        # arg1 = table name
+    if action == sqlite3.SQLITE_READ:
         return sqlite3.SQLITE_OK if arg1 in ALLOWED_TABLES else sqlite3.SQLITE_DENY
     if action == sqlite3.SQLITE_FUNCTION:
-        return sqlite3.SQLITE_OK             # date(), AVG(), ROUND() ...
-    # Everything else: writes, ATTACH, PRAGMA, ... Recursive CTEs are refused too: they
-    # read their own name like a table. Not needed for these questions, and it removes
-    # the easiest way to write an endless query.
+        return sqlite3.SQLITE_OK
     return sqlite3.SQLITE_DENY
 
 
@@ -129,10 +98,7 @@ def open_readonly(path=db.DB_PATH):
 
 
 def run_sql(conn, sql):
-    """Runs the query with the guards. Returns (column names, rows, truncated).
-    Raises sqlite3.Error with a readable message if the query is refused or fails."""
     deadline = time.monotonic() + QUERY_TIMEOUT_S
-    # Called every N virtual-machine steps; a non-zero return aborts the query.
     conn.set_progress_handler(lambda: int(time.monotonic() > deadline), 10_000)
     try:
         cur = conn.execute(sql)
@@ -143,10 +109,7 @@ def run_sql(conn, sql):
     return cols, rows[:MAX_ROWS], len(rows) > MAX_ROWS
 
 
-# --- 3. Rows -> answer ---
-
 def tidy(v):
-    """Round floats the way a person would say them, so the answer can copy them exactly."""
     if isinstance(v, float):
         return round(v) if abs(v) >= 10 else round(v, 2)
     return v
@@ -161,14 +124,13 @@ def answer(question, cols, rows, model):
 
 
 def ask(question, conn, today, model=DEFAULT_MODEL):
-    """Full pipeline. Returns a dict with sql, attempts, cols, rows, answer, unverified, error."""
     history, sql, err = [], None, None
     for attempt in range(1 + MAX_RETRIES):
         sql = generate_sql(question, today, model, history)
         try:
             cols, rows, truncated = run_sql(conn, sql)
             break
-        except (sqlite3.Error, sqlite3.Warning) as e:   # Warning: e.g. more than one statement
+        except (sqlite3.Error, sqlite3.Warning) as e:
             err = str(e)
             history += [{"role": "assistant", "content": f"```sql\n{sql}\n```"},
                         {"role": "user", "content": f"That query failed: {err}. "

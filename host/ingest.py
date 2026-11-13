@@ -1,15 +1,3 @@
-"""Reads events from the device and writes them to the database.
-
-Sources:
-  sim     Virtual device: runs the firmware's C++ code on the Mac with WESAD data
-          (firmware/test_native, "device" mode). Used while there is no real device.
-  serial  (later) The real device, over a serial port.
-
-Usage:
-  python host/ingest.py --source sim --subject S2 --start "2026-11-12 09:00"
-
-Re-loading the same data is safe: rows with an existing timestamp are skipped.
-"""
 import argparse
 import subprocess
 import sys
@@ -26,7 +14,6 @@ NATIVE = ROOT / "firmware/test_native"
 
 
 def sim_lines(subject):
-    """Runs the virtual device and returns its protocol lines."""
     vec = ROOT / "data/vectors"
     vec.mkdir(exist_ok=True)
     resp_file, ecg_file = vec / f"{subject}_resp25.txt", vec / f"{subject}_ecg250.txt"
@@ -40,37 +27,43 @@ def sim_lines(subject):
     return out.splitlines()
 
 
-def ingest(lines, start, conn):
-    """Writes protocol lines to the database. Device time (ms) + start = wall-clock time."""
-    def ts(t_ms):
-        return (start + timedelta(milliseconds=t_ms)).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+def store_event(conn, ev, ts):
+    if isinstance(ev, Breath):
+        conn.execute("INSERT OR IGNORE INTO breaths VALUES (?, ?)", (ts, ev.interval_ms / 1000))
+        return "breath"
+    if isinstance(ev, HoldStart):
+        conn.execute("INSERT OR IGNORE INTO holds VALUES (?, NULL)", (ts,))
+        return "hold"
+    if isinstance(ev, HoldEnd):
+        conn.execute("""UPDATE holds SET duration_s = ?
+                        WHERE start_ts = (SELECT MAX(start_ts) FROM holds
+                                          WHERE duration_s IS NULL AND start_ts <= ?)""",
+                     (ev.duration_ms / 1000, ts))
+        return "hold_end"
+    if isinstance(ev, LeadOff):
+        conn.execute("INSERT OR IGNORE INTO lead_off VALUES (?, ?)", (ts, ev.bits))
+        return "lead_off"
+    if isinstance(ev, Hrv):
+        conn.execute("INSERT OR IGNORE INTO hrv VALUES (?, ?, ?)", (ts, ev.rmssd_ms, ev.hr_bpm))
+        return "hrv"
+    return None
 
+
+def ts_text(dt):
+    return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+
+def ingest(lines, start, conn):
     counts = {"breath": 0, "hold": 0, "hrv": 0, "lead_off": 0, "malformed": 0}
-    with conn:   # one transaction: either everything is written or nothing
+    with conn:
         for line in lines:
-            if line.startswith("#"):        # debug text from the device
+            if line.startswith("#"):
                 continue
             ev = parse(line)
-            if isinstance(ev, Breath):
-                conn.execute("INSERT OR IGNORE INTO breaths VALUES (?, ?)",
-                             (ts(ev.t_ms), ev.interval_ms / 1000))
-                counts["breath"] += 1
-            elif isinstance(ev, HoldStart):
-                conn.execute("INSERT OR IGNORE INTO holds VALUES (?, NULL)", (ts(ev.t_ms),))
-                counts["hold"] += 1
-            elif isinstance(ev, HoldEnd):
-                # The end is written to the most recent open hold
-                conn.execute("""UPDATE holds SET duration_s = ?
-                                WHERE start_ts = (SELECT MAX(start_ts) FROM holds
-                                                  WHERE duration_s IS NULL AND start_ts <= ?)""",
-                             (ev.duration_ms / 1000, ts(ev.t_ms)))
-            elif isinstance(ev, LeadOff):
-                counts["lead_off"] += 1     # not stored yet; will gate the metrics later
-            elif isinstance(ev, Hrv):
-                conn.execute("INSERT OR IGNORE INTO hrv VALUES (?, ?, ?)",
-                             (ts(ev.t_ms), ev.rmssd_ms, ev.hr_bpm))
-                counts["hrv"] += 1
-            else:
+            kind = store_event(conn, ev, ts_text(start + timedelta(milliseconds=ev.t_ms))) if ev else None
+            if kind in counts:
+                counts[kind] += 1
+            elif kind is None:
                 counts["malformed"] += 1
     return counts
 

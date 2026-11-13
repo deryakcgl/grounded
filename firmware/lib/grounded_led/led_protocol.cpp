@@ -1,7 +1,7 @@
 #include "led_protocol.h"
 
 const char* LineReader::feed(char c) {
-  if (c == '\r') return nullptr;               // accept both \n and \r\n line endings
+  if (c == '\r') return nullptr;
   if (c == '\n') {
     const bool ok = !overflow_ && len_ > 0;
     buf_[len_] = '\0';
@@ -12,18 +12,16 @@ const char* LineReader::feed(char c) {
   if (len_ < MAX) {
     buf_[len_++] = c;
   } else {
-    overflow_ = true;                          // keep reading until '\n', then drop the line
+    overflow_ = true;
   }
   return nullptr;
 }
 
-// Reads an unsigned decimal number at *p, moves p past it. False if there are no digits
-// or the number is larger than max.
 static bool parse_uint(const char*& p, uint32_t max, uint32_t& out) {
   if (*p < '0' || *p > '9') return false;
   uint32_t v = 0;
   while (*p >= '0' && *p <= '9') {
-    v = v * 10 + (uint32_t)(*p++ - '0');       // multiply by 10: cheap (hardware multiplier)
+    v = v * 10 + (uint32_t)(*p++ - '0');
     if (v > max) return false;
   }
   out = v;
@@ -48,14 +46,11 @@ LedCommand parse_led_command(const char* line) {
   return cmd;
 }
 
-// --- Message builders ---
-
-// Writes v in decimal at buf, returns the number of characters.
 static size_t put_uint(char* buf, uint32_t v) {
   char tmp[10];
   size_t n = 0;
   do {
-    tmp[n++] = (char)('0' + v % 10);           // runs only when a message is sent: fine
+    tmp[n++] = (char)('0' + v % 10);
     v /= 10;
   } while (v);
   for (size_t i = 0; i < n; i++) buf[i] = tmp[n - 1 - i];

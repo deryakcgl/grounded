@@ -1,6 +1,3 @@
-/* Minimal stand-in for the Wokwi Chips API (signatures from docs.wokwi.com/chips-api), so the
- * ADS1292R custom chip (grounded_pod/wokwi/ads1292r.chip.c) can run on the Mac.
- * The functions are implemented by test_native/wokwi_chip_sim.cpp. Test only. */
 #pragma once
 #include <stdbool.h>
 #include <stdint.h>

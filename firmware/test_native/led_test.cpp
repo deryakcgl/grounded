@@ -1,5 +1,3 @@
-// Unit tests for lib/grounded_led (pacer timing, protocol parsing, device behaviour).
-// Usage: ./led_test   (prints failures, exit code 0 = all passed)
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -25,23 +23,20 @@ enum { BOX = 0, R478 = 1, RELAX = 2 };
 
 static void test_pacer() {
   BreathPacer p;
-  CHECK(!p.start(RHYTHM_COUNT, 1, 0));                 // unknown rhythm rejected
+  CHECK(!p.start(RHYTHM_COUNT, 1, 0));
   CHECK(p.start(BOX, 0, 1000));
 
-  CHECK(p.update(4999) == 0 && p.phase() == INHALE);   // 3999 ms in: still inhaling
+  CHECK(p.update(4999) == 0 && p.phase() == INHALE);
   CHECK(p.update(5000) == BreathPacer::EV_PHASE && p.phase() == HOLD_IN);
 
-  // Called late (at 9100 instead of 9000): next phase, but the rhythm doesn't shift
   p.update(9100);
   CHECK(p.phase() == EXHALE);
-  CHECK(p.update(12999) == 0);                         // EXHALE still ends at 13000, not 13100
+  CHECK(p.update(12999) == 0);
   CHECK(p.update(13000) == BreathPacer::EV_PHASE && p.phase() == HOLD_OUT);
 
-  // A big jump passes several phases and cycles in one call
   p.update(1000 + 16000 * 2 + 3000);
   CHECK(p.cyclesDone() == 2 && p.phase() == INHALE);
 
-  // Relax: HOLD_IN and HOLD_OUT have length 0 and are skipped
   p.start(RELAX, 2, 0);
   CHECK(p.update(4000) == BreathPacer::EV_PHASE && p.phase() == EXHALE);
   CHECK(p.update(10000) == (BreathPacer::EV_PHASE | BreathPacer::EV_CYCLE));
@@ -49,13 +44,12 @@ static void test_pacer() {
   const uint8_t ev = p.update(20000);
   CHECK(ev & BreathPacer::EV_DONE);
   CHECK(!p.active() && p.cyclesDone() == 2);
-  CHECK(p.level(20000) == BreathPacer::MIN_LEVEL);     // idle: faint glow
+  CHECK(p.level(20000) == BreathPacer::MIN_LEVEL);
 
-  // Brightness: halfway through INHALE, smoothstep(0.5) = 0.5
   p.start(BOX, 0, 0);
   p.update(2000);
   CHECK(fabsf(p.level(2000) - (0.02f + 0.98f * 0.5f)) < 1e-6f);
-  p.update(5000);                                       // HOLD_IN: full brightness
+  p.update(5000);
   CHECK(p.level(5000) == 1.0f);
 }
 
@@ -87,11 +81,11 @@ static void test_line_reader() {
   CHECK(r.feed('X') == nullptr);
   const char* l = r.feed('\n');
   CHECK(l && strcmp(l, "X") == 0);
-  l = feed_all(r, "G,2,6\r\n");                         // Windows-style line ending
+  l = feed_all(r, "G,2,6\r\n");
   CHECK(l && strcmp(l, "G,2,6") == 0);
   std::string longline(LineReader::MAX + 5, 'A');
-  CHECK(feed_all(r, (longline + "\n").c_str()) == nullptr);   // too long: dropped
-  l = feed_all(r, "?\n");                                // and the next line works again
+  CHECK(feed_all(r, (longline + "\n").c_str()) == nullptr);
+  l = feed_all(r, "?\n");
   CHECK(l && strcmp(l, "?") == 0);
 }
 
@@ -103,7 +97,6 @@ static void test_messages() {
   CHECK(std::string(b, led_msg_button(b, 1)) == "P,1\n");
 }
 
-// --- Device: feed commands, capture what it sends (without debug '#' lines) ---
 static std::string g_out;
 static void capture(const char* text, size_t len) { g_out.append(text, len); }
 static std::string take() {
@@ -130,27 +123,27 @@ static void test_device() {
 
   send_line(d, "G,2,2", 0);
   CHECK(take() == "S,GUIDE,2,2\n");
-  d.tick(10000);                                         // one Relax cycle
+  d.tick(10000);
   CHECK(take() == "");
-  d.tick(20000);                                         // second cycle: done
+  d.tick(20000);
   CHECK(take() == "D,2,2\nS,IDLE\n");
 
-  send_line(d, "G,7,1", 20000);                          // unknown rhythm
+  send_line(d, "G,7,1", 20000);
   CHECK(take() == "!,unknown rhythm\n");
   send_line(d, "nonsense", 20000);
   CHECK(take() == "!,bad command\n");
 
-  send_line(d, "G,0,0", 30000);                          // endless Box...
+  send_line(d, "G,0,0", 30000);
   d.tick(30000 + 16000 + 100);
   take();
-  send_line(d, "G,1,3", 50000);                          // ...replaced: D reports 1 cycle
+  send_line(d, "G,1,3", 50000);
   CHECK(take() == "D,0,1\nS,GUIDE,1,3\n");
   send_line(d, "X", 51000);
   CHECK(take() == "D,1,0\nS,IDLE\n");
 
-  d.onButton(60000);                                     // idle: last rhythm (1) again
+  d.onButton(60000);
   CHECK(take() == "P,1\nS,GUIDE,1,6\n");
-  d.onButton(61000);                                     // guiding: next rhythm
+  d.onButton(61000);
   CHECK(take() == "D,1,0\nP,2\nS,GUIDE,2,6\n");
   send_line(d, "?", 62000);
   CHECK(take() == "S,GUIDE,2,6\n");

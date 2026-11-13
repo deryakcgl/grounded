@@ -1,14 +1,3 @@
-// ADS1292R simulator for Wokwi (custom chip). Behaves like the real part on the SPI bus
-// (TI SBAS502C) and produces a synthetic ECG and breathing signal you can change with sliders.
-//
-//   Registers, RREG/WREG, RDATAC/SDATAC, START/STOP, RESET, 72-bit data frames, DRDY.
-//   Breaks of the datasheet's rules are printed in the "Chips Console" tab.
-//   ECG: a PQRST wave; the heart speeds up while breathing in and slows down while breathing
-//   out (respiratory sinus arrhythmia), which is where real HRV comes from.
-//
-// SPI with a 1-byte buffer: every received byte is handled in on_spi_done(), and the byte put
-// back into the buffer is what the chip sends during the NEXT byte - just like real hardware,
-// where the answer to a command arrives one byte later.
 #include "wokwi-api.h"
 
 #include <math.h>
@@ -19,17 +8,15 @@
 
 #define PI 3.14159265358979
 
-// Opcodes (Table 15)
 enum { WAKEUP = 0x02, STANDBY = 0x04, RESET = 0x06, START = 0x08, STOP = 0x0A, OFFSETCAL = 0x1A,
        RDATAC = 0x10, SDATAC = 0x11, RDATA = 0x12 };
-// Registers (Table 16)
 enum { R_ID, R_CONFIG1, R_CONFIG2, R_LOFF, R_CH1SET, R_CH2SET, R_RLD_SENS, R_LOFF_SENS,
        R_LOFF_STAT, R_RESP1, R_RESP2, R_GPIO, R_COUNT };
 static const uint8_t RESET_VALUES[R_COUNT] = {0x73, 0x02, 0x80, 0x10, 0x00, 0x00,
                                               0x00, 0x00, 0x00, 0x00, 0x02, 0x0C};
-static const int GAINS[8] = {6, 1, 2, 3, 4, 8, 12, 6};   // CHnSET[6:4]; 111 is reserved
+static const int GAINS[8] = {6, 1, 2, 3, 4, 8, 12, 6};
 
-#define T_4CLK_NS 7812        // 4 tCLK at 512 kHz
+#define T_4CLK_NS 7812
 #define FULL_SCALE 8388607
 
 typedef enum { ST_OPCODE, ST_RREG_COUNT, ST_RREG_DATA, ST_WREG_COUNT, ST_WREG_DATA, ST_DATA,
@@ -49,10 +36,10 @@ typedef struct {
   uint64_t last_byte_ns;
   uint32_t frames_since_start, violations;
 
-  // Signal generator
-  double beat_t, rr;          // time since this beat started, its RR interval (s)
-  double breath_phase;        // 0..1
-  double resp_hold;           // value frozen while holding the breath
+  double beat_t, rr;
+  double breath_phase;
+  double resp_hold;
+  double test_t;
   uint32_t rng;
 } chip_t;
 
@@ -60,9 +47,7 @@ static void violate(chip_t* c, const char* what) {
   if (c->violations++ < 20) printf("ADS1292R: datasheet rule broken: %s\n", what);
 }
 
-// --- Signal generator ---
-
-static double noise(chip_t* c) {   // small uniform noise in [-1, 1], deterministic
+static double noise(chip_t* c) {
   c->rng = c->rng * 1664525u + 1013904223u;
   return (double)(c->rng >> 8) / 8388608.0 - 1.0;
 }
@@ -72,14 +57,13 @@ static double gauss(double t, double center, double width) {
   return exp(-0.5 * x * x);
 }
 
-// One ECG beat in millivolts; R peak at 0.25 s after the beat starts
 static double pqrst(double t) {
   const double r = 0.25;
-  return 0.12 * gauss(t, r - 0.20, 0.025)    // P
-       - 0.12 * gauss(t, r - 0.03, 0.008)    // Q
-       + 1.20 * gauss(t, r, 0.010)           // R
-       - 0.25 * gauss(t, r + 0.03, 0.010)    // S
-       + 0.30 * gauss(t, r + 0.25, 0.040);   // T
+  return 0.12 * gauss(t, r - 0.20, 0.025)
+       - 0.12 * gauss(t, r - 0.03, 0.008)
+       + 1.20 * gauss(t, r, 0.010)
+       - 0.25 * gauss(t, r + 0.03, 0.010)
+       + 0.30 * gauss(t, r + 0.25, 0.040);
 }
 
 static void next_sample(chip_t* c, double dt, int32_t* resp_code, int32_t* ecg_code, uint8_t* loff) {
@@ -87,7 +71,6 @@ static void next_sample(chip_t* c, double dt, int32_t* resp_code, int32_t* ecg_c
   const double swing = attr_read(c->a_hrv) / 1000.0;
   const bool hold = attr_read(c->a_hold) != 0, contact = attr_read(c->a_contact) != 0;
 
-  // Breathing
   if (!hold) {
     c->breath_phase += dt * breath / 60.0;
     if (c->breath_phase >= 1.0) c->breath_phase -= 1.0;
@@ -96,7 +79,6 @@ static void next_sample(chip_t* c, double dt, int32_t* resp_code, int32_t* ecg_c
   if (!hold) c->resp_hold = resp;
   resp += 0.01 * noise(c);
 
-  // Heart: each new RR interval is shorter while breathing in (RSA), plus a little jitter
   c->beat_t += dt;
   if (c->beat_t >= c->rr) {
     c->beat_t -= c->rr;
@@ -105,31 +87,36 @@ static void next_sample(chip_t* c, double dt, int32_t* resp_code, int32_t* ecg_c
   }
   double ecg_mv = pqrst(c->beat_t) + 0.05 * sin(2.0 * PI * c->breath_phase) + 0.01 * noise(c);
 
-  // Lead-off: only reported if the comparators (CONFIG2[6]) and LOFF_SENS bits are on.
-  // LOFF_SENS[3:0] and LOFF_STAT[3:0] use the same bit order (IN2N, IN2P, IN1N, IN1P).
   *loff = 0;
   if (!contact) {
     if (c->regs[R_CONFIG2] & 0x40) *loff = c->regs[R_LOFF_SENS] & 0x0F;
-    ecg_mv = 1e6;   // open inputs drift to the rail
+    ecg_mv = 1e6;
   }
   c->regs[R_LOFF_STAT] = (uint8_t)((c->regs[R_LOFF_STAT] & 0xE0) | *loff);
 
-  // Volts -> ADC codes with the configured gains: code = V * gain / VREF * (2^23 - 1)
   const int g_ecg = GAINS[(c->regs[R_CH2SET] >> 4) & 7], g_resp = GAINS[(c->regs[R_CH1SET] >> 4) & 7];
   const double vref_mv = (c->regs[R_CONFIG2] & 0x10) ? 4033.0 : 2420.0;
   double e = ecg_mv * g_ecg / vref_mv * FULL_SCALE;
   double r = (c->regs[R_RESP1] & 0xC0) == 0xC0 ? resp * 200000.0 * g_resp : 2000.0 * noise(c);
-  if (!(c->regs[R_CONFIG2] & 0x20)) {   // reference buffer off and no external reference
+  if (!(c->regs[R_CONFIG2] & 0x20)) {
     e = FULL_SCALE * noise(c);
     r = FULL_SCALE * noise(c);
   }
   if (e > FULL_SCALE) e = FULL_SCALE;
   if (e < -FULL_SCALE - 1) e = -FULL_SCALE - 1;
+  c->test_t += dt;
+  const double test_amp = (double)FULL_SCALE / 2400.0;
+  const bool high = !(c->regs[R_CONFIG2] & 0x01) || fmod(c->test_t, 1.0) < 0.5;
+  const double test = (c->regs[R_CONFIG2] & 0x02) ? (high ? test_amp : -test_amp) : 0.0;
+  const uint8_t mux1 = c->regs[R_CH1SET] & 0x0F, mux2 = c->regs[R_CH2SET] & 0x0F;
+  if (mux1 == 0x5) r = test * g_resp;
+  if (mux2 == 0x5) e = test * g_ecg;
+  if (mux1 == 0x1) r = 20.0 * noise(c);
+  if (mux2 == 0x1) e = 20.0 * noise(c);
+
   *ecg_code = (int32_t)e;
   *resp_code = (int32_t)r;
 }
-
-// --- Conversions and DRDY ---
 
 static void put24(uint8_t* p, uint32_t v) {
   p[0] = (uint8_t)(v >> 16);
@@ -144,13 +131,13 @@ static void on_conversion(void* user_data) {
   int32_t resp = 0, ecg = 0;
   uint8_t loff = 0;
   next_sample(c, 1.0 / data_rate(c), &resp, &ecg, &loff);
-  if (c->frames_since_start++ < 3) resp = ecg = 0;   // filter not settled yet (8.5.1.10)
+  if (c->frames_since_start++ < 3) resp = ecg = 0;
 
   put24(c->frame, 0xC00000u | ((uint32_t)loff << 15) | ((uint32_t)(c->regs[R_GPIO] & 3) << 13));
   put24(c->frame + 3, (uint32_t)resp & 0xFFFFFF);
   put24(c->frame + 6, (uint32_t)ecg & 0xFFFFFF);
 
-  if (c->drdy_low) {             // previous frame not read: DRDY pulses high, then low again
+  if (c->drdy_low) {
     pin_write(c->drdy, HIGH);
     timer_start(c->drdy_timer, 8, false);
   } else {
@@ -184,13 +171,11 @@ static void stop_conversions(chip_t* c) {
 
 static void chip_reset(chip_t* c) {
   for (int i = 0; i < R_COUNT; i++) c->regs[i] = RESET_VALUES[i];
-  c->rdatac = true;              // the device starts in RDATAC mode
+  c->rdatac = true;
   stop_conversions(c);
   pin_write(c->drdy, HIGH);
   c->drdy_low = false;
 }
-
-// --- SPI: one received byte in, the byte to send next out ---
 
 static void check_gap(chip_t* c, uint64_t now) {
   if (now - c->last_byte_ns < T_4CLK_NS) violate(c, "< 4 tCLK between bytes of a multi-byte command (8.5.2.10)");
@@ -213,9 +198,9 @@ static void check_must_bits(chip_t* c, uint8_t reg, uint8_t v) {
 static uint8_t handle_byte(chip_t* c, uint8_t in, uint64_t now) {
   switch (c->state) {
     case ST_OPCODE:
-      if (c->rdatac && in == 0x00) {            // host is clocking out data
+      if (c->rdatac && in == 0x00) {
         c->state = ST_DATA;
-        if (c->drdy_low) {                      // DRDY goes high on the first SCLK (8.5.1.6)
+        if (c->drdy_low) {
           pin_write(c->drdy, HIGH);
           c->drdy_low = false;
         }
@@ -235,7 +220,7 @@ static uint8_t handle_byte(chip_t* c, uint8_t in, uint64_t now) {
         case START: start_conversions(c); break;
         case STOP: stop_conversions(c); break;
         case RESET: chip_reset(c); break;
-        default: break;                         // WAKEUP, STANDBY, OFFSETCAL, RDATA: no effect here
+        default: break;
       }
       c->state = ST_IGNORE;
       return 0;
@@ -244,7 +229,7 @@ static uint8_t handle_byte(chip_t* c, uint8_t in, uint64_t now) {
       check_gap(c, now);
       c->count = (uint8_t)((in & 0x1F) + 1);
       c->state = ST_RREG_DATA;
-      return c->addr < R_COUNT ? c->regs[c->addr] : 0;   // sent during the next byte
+      return c->addr < R_COUNT ? c->regs[c->addr] : 0;
 
     case ST_RREG_DATA:
       check_gap(c, now);
@@ -271,7 +256,7 @@ static uint8_t handle_byte(chip_t* c, uint8_t in, uint64_t now) {
       return 0;
 
     case ST_DATA:
-      return c->frame[c->frame_pos++ % 9];      // after the last byte the frame repeats
+      return c->frame[c->frame_pos++ % 9];
 
     case ST_IGNORE:
     default:
@@ -281,7 +266,7 @@ static uint8_t handle_byte(chip_t* c, uint8_t in, uint64_t now) {
 
 static void on_spi_done(void* user_data, uint8_t* buffer, uint32_t count) {
   chip_t* c = user_data;
-  if (count == 0) return;                       // CS went high mid-byte
+  if (count == 0) return;
   const uint64_t now = get_sim_nanos();
   buffer[0] = handle_byte(c, buffer[0], now);
   c->last_byte_ns = now;
@@ -293,13 +278,12 @@ static void on_pin_change(void* user_data, pin_t pin, uint32_t value) {
   if (pin == c->cs) {
     if (value == LOW) {
       c->state = ST_OPCODE;
-      // In RDATAC mode the first data byte is shifted out on the very first clocks
       c->buf[0] = c->rdatac ? c->frame[0] : 0;
       spi_start(c->spi, c->buf, 1);
     } else {
       spi_stop(c->spi);
     }
-  } else if (pin == c->pwdn) {                  // reset on the rising edge after a low pulse
+  } else if (pin == c->pwdn) {
     if (value == LOW) c->pwdn_low = true;
     else if (c->pwdn_low) { c->pwdn_low = false; chip_reset(c); }
   } else if (pin == c->start) {
@@ -333,7 +317,7 @@ void chip_init(void) {
       .sck = pin_init("SCLK", INPUT),
       .mosi = pin_init("DIN", INPUT),
       .miso = pin_init("DOUT", INPUT),
-      .mode = 1,                                // CPOL 0, CPHA 1 (8.5.1.3, 8.5.1.4)
+      .mode = 1,
       .done = on_spi_done,
       .user_data = c,
   };

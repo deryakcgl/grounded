@@ -1,21 +1,3 @@
-"""Coach: watches the per-minute stress score and starts a guided breathing session on the desk LED.
-
-Rule (v1, simple and explainable):
-  trigger   stress >= 70 for 3 minutes in a row
-  rhythm    Relax 4-0-6-0: 6 breaths/min with a long exhale. Slow breathing around 6/min is the
-            most studied pace for calming the heart, and it's easy to follow without practice.
-  length    6 cycles = 1 minute
-  cooldown  no new session within 20 minutes of the previous one (a coach must not nag)
-  respect   never interrupt a session the user started with the button
-
-Every session goes into the interventions table with the stress before and after it, so we
-can later measure whether guiding helps, and for whom.
-
-Usage:
-  python host/coach.py --replay 2026-11-12                 # replay a day, virtual LED, 300x speed
-  python host/coach.py --replay 2026-11-12 --led /dev/tty.usbmodem1103   # real LED, real time
-  python host/coach.py --report                            # list stored sessions
-"""
 import argparse
 import sys
 import time
@@ -26,7 +8,7 @@ from led import CYCLE_S, RHYTHMS, Button, Done, Rejected, State, guide, open_led
 
 TRIGGER_STRESS = 70
 TRIGGER_MINUTES = 3
-GUIDE_RHYTHM = 2          # Relax 4-0-6-0
+GUIDE_RHYTHM = 2
 GUIDE_CYCLES = 6
 COOLDOWN = timedelta(minutes=20)
 AFTER_WINDOW = timedelta(minutes=5)
@@ -34,21 +16,19 @@ TS_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS interventions (
-    ts                TEXT PRIMARY KEY,   -- when the session started
-    source            TEXT NOT NULL,      -- 'coach' (automatic) or 'button' (the user)
-    rhythm            INTEGER NOT NULL,   -- index into the LED's rhythm table
+    ts                TEXT PRIMARY KEY,
+    source            TEXT NOT NULL,
+    rhythm            INTEGER NOT NULL,
     cycles_requested  INTEGER,
-    cycles_done       INTEGER,            -- reported by the LED when the session ends
+    cycles_done       INTEGER,
     reason            TEXT,
-    stress_before     REAL,               -- mean stress of the minutes that triggered it
-    stress_after      REAL                -- mean stress of the 5 minutes after it ended
+    stress_before     REAL,
+    stress_after      REAL
 );
 """
 
 
 def decide(window, last_start, now, led_busy):
-    """Pure decision: (rhythm, cycles, reason) to start a session now, or None.
-    window: the most recent minutes, oldest first, each a dict with 'stress'."""
     if led_busy or len(window) < TRIGGER_MINUTES:
         return None
     if any(m["stress"] < TRIGGER_STRESS for m in window[-TRIGGER_MINUTES:]):
@@ -59,7 +39,6 @@ def decide(window, last_start, now, led_busy):
 
 
 def fill_stress_after(conn):
-    """For finished sessions: mean stress in the 5 minutes after the session ended."""
     rows = conn.execute("""SELECT ts, rhythm, cycles_done FROM interventions
                            WHERE stress_after IS NULL AND cycles_done IS NOT NULL""").fetchall()
     with conn:
@@ -75,6 +54,56 @@ def bar(stress):
     return "#" * int(stress / 5)
 
 
+class Coach:
+    def __init__(self, conn, led, log=print):
+        self.conn, self.led, self.log = conn, led, log
+        self.window = []
+        self.last_start = None
+        self.led_busy = False
+        self.contact = True
+
+    def on_minute(self, m, now):
+        self.window = (self.window + [m])[-TRIGGER_MINUTES:]
+        if not self.contact:
+            return
+        d = decide(self.window, self.last_start, now, self.led_busy)
+        if not d:
+            return
+        rhythm, cycles, reason = d
+        self.led.send(guide(rhythm, cycles))
+        self.led_busy, self.last_start = True, now
+        before = sum(w["stress"] for w in self.window) / len(self.window)
+        with self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO interventions VALUES (?,?,?,?,NULL,?,?,NULL)",
+                              (m["ts"], "coach", rhythm, cycles, reason, before))
+        self.log(f"        COACH: {reason} -> guide {RHYTHMS[rhythm]} x {cycles}")
+
+    def poll(self, now):
+        for msg in self.led.poll():
+            if isinstance(msg, State):
+                self.led_busy = msg.guiding
+            elif isinstance(msg, Done):
+                self.log(f"        LED: session done, {msg.cycles_done} cycles of {RHYTHMS[msg.rhythm]}")
+                with self.conn:
+                    self.conn.execute("""UPDATE interventions SET cycles_done = ? WHERE ts =
+                                         (SELECT MAX(ts) FROM interventions WHERE cycles_done IS NULL)""",
+                                      (msg.cycles_done,))
+            elif isinstance(msg, Button):
+                self.log(f"        LED: user pressed the button -> {RHYTHMS[msg.rhythm]}")
+                with self.conn:
+                    self.conn.execute(
+                        "INSERT OR REPLACE INTO interventions VALUES (?,?,?,?,NULL,?,NULL,NULL)",
+                        (now.strftime(TS_FORMAT)[:-3], "button", msg.rhythm, 6, "user started"))
+            elif isinstance(msg, Rejected):
+                self.log(f"        LED rejected a command: {msg.message}")
+
+    def finish(self, timeout_s=2.0):
+        deadline = time.monotonic() + timeout_s
+        while self.led_busy and time.monotonic() < deadline:
+            self.poll(datetime.now())
+            time.sleep(0.01)
+
+
 def replay(conn, date, target, speed):
     minutes = [dict(zip(("ts", "stress", "hr_bpm"), r)) for r in conn.execute(
         "SELECT ts, stress, hr_bpm FROM minute_metrics WHERE date(ts) = ? ORDER BY ts", (date,))]
@@ -87,61 +116,25 @@ def replay(conn, date, target, speed):
         print(f"(removed {n} sessions from an earlier replay of {date})")
 
     led = open_led(target, speed)
+    coach = Coach(conn, led)
     sim0 = datetime.strptime(minutes[0]["ts"], TS_FORMAT)
     real0 = time.monotonic()
 
     def sim_now():
         return sim0 + timedelta(seconds=(time.monotonic() - real0) * speed)
 
-    led_busy, last_start = False, None
-
-    def handle_led():
-        nonlocal led_busy
-        for msg in led.poll():
-            if isinstance(msg, State):
-                led_busy = msg.guiding
-            elif isinstance(msg, Done):
-                print(f"        LED: session done, {msg.cycles_done} cycles of {RHYTHMS[msg.rhythm]}")
-                with conn:
-                    conn.execute("""UPDATE interventions SET cycles_done = ? WHERE ts =
-                                    (SELECT MAX(ts) FROM interventions WHERE cycles_done IS NULL)""",
-                                 (msg.cycles_done,))
-            elif isinstance(msg, Button):
-                ts = sim_now().strftime(TS_FORMAT)[:-3]
-                print(f"        LED: user pressed the button -> {RHYTHMS[msg.rhythm]}")
-                with conn:
-                    conn.execute("INSERT OR REPLACE INTO interventions VALUES (?,?,?,?,NULL,?,NULL,NULL)",
-                                 (ts, "button", msg.rhythm, 6, "user started"))
-            elif isinstance(msg, Rejected):
-                print(f"        LED rejected a command: {msg.message}")
-
     print(f"Replaying {date}: {len(minutes)} minutes at {speed:g}x, LED = {target}\n")
-    for i, m in enumerate(minutes):
+    for m in minutes:
         now = datetime.strptime(m["ts"], TS_FORMAT)
-        while sim_now() < now:                     # wait for this minute's (simulated) time
-            handle_led()
+        while sim_now() < now:
+            coach.poll(sim_now())
             time.sleep(0.005)
-        handle_led()
+        coach.poll(now)
         print(f"{now:%H:%M}  {m['stress']:3.0f} {bar(m['stress']):<20} HR {m['hr_bpm']:3.0f}")
+        coach.on_minute(m, now)
 
-        window = minutes[max(0, i - TRIGGER_MINUTES + 1):i + 1]
-        d = decide(window, last_start, now, led_busy)
-        if d:
-            rhythm, cycles, reason = d
-            led.send(guide(rhythm, cycles))
-            led_busy, last_start = True, now
-            before = sum(w["stress"] for w in window) / len(window)
-            with conn:
-                conn.execute("INSERT OR REPLACE INTO interventions VALUES (?,?,?,?,NULL,?,?,NULL)",
-                             (m["ts"], "coach", rhythm, cycles, reason, before))
-            print(f"        COACH: {reason} -> guide {RHYTHMS[rhythm]} x {cycles}")
-
-    deadline = time.monotonic() + 2.0              # let a running session finish
-    while led_busy and time.monotonic() < deadline:
-        handle_led()
-        time.sleep(0.01)
+    coach.finish()
     led.close()
-
     fill_stress_after(conn)
     report(conn, date)
     return 0

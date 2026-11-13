@@ -1,9 +1,3 @@
-// Virtual desk LED for the Mac: the same LedDevice code as the firmware, but it talks over
-// stdin/stdout instead of a serial port. host/led.py starts it as a subprocess.
-//
-// Usage: ./led_sim [--speed N]
-//   --speed N   run N times faster than real time (for replay demos); default 1
-// Type commands by hand to try it:  G,2,3  then  ?  then  X
 #include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,7 +10,7 @@
 
 static void write_stdout(const char* text, size_t len) {
   fwrite(text, 1, len, stdout);
-  fflush(stdout);   // a pipe is buffered by default; the host must see each line at once
+  fflush(stdout);
 }
 
 int main(int argc, char** argv) {
@@ -38,12 +32,11 @@ int main(int argc, char** argv) {
   device.begin();
 
   for (;;) {
-    // Wait up to 5 ms for input; this loop plays the role of the firmware's loop()
     struct pollfd pfd = {STDIN_FILENO, POLLIN, 0};
     if (poll(&pfd, 1, 5) > 0) {
       char buf[64];
       const ssize_t n = read(STDIN_FILENO, buf, sizeof buf);
-      if (n <= 0) return 0;   // host closed the pipe: exit
+      if (n <= 0) return 0;
       for (ssize_t i = 0; i < n; i++) device.onChar(buf[i], now_ms());
     }
     device.tick(now_ms());

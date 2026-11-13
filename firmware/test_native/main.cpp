@@ -1,13 +1,3 @@
-// Test program that runs the grounded_dsp library on the computer (Mac).
-// Compiles the SAME .cpp files as the firmware; the only difference is that input comes from files.
-//
-// Usage:
-//   ./dsp_test resp <file>    -> one respiration sample per line (25 Hz)
-//   ./dsp_test ecg  <file>    -> one ECG sample per line (250 Hz)
-//   ./dsp_test device <resp> <ecg>
-//       "Virtual device": processes both signals together like the real device and
-//       emits protocol lines (protocol.h). host/ingest.py reads them.
-// Output (stdout, CSV): event lines; read by research/compare_native.py.
 #include <stdio.h>
 #include <string.h>
 
@@ -46,7 +36,6 @@ static int run_ecg(FILE* f) {
   return 0;
 }
 
-// Both signals share one clock: 10 ECG samples (250 Hz) per respiration sample (25 Hz).
 static int run_device(FILE* fr, FILE* fe) {
   static_assert(ECG_FS % RESP_FS == 0, "ECG rate must be a multiple of the respiration rate");
   BreathDetector breath;

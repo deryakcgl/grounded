@@ -1,47 +1,62 @@
-"""WESAD gogus verisini ADS1292R'nin kullanacagi hizlara indirip kucuk bir dosyaya kaydeder.
+"""Downsamples WESAD chest data to the rates the ADS1292R will use and saves a small file.
 
-- Solunum: 700 Hz -> 25 Hz
-- EKG:     700 Hz -> 250 Hz
-Bir kez calistirilir; sonraki scriptler buyuk .pkl yerine bu dosyayi okur.
+- Respiration: 700 Hz -> 25 Hz
+- ECG:         700 Hz -> 250 Hz
+Run once; later scripts read this file instead of the large .pkl.
+
+Usage:
+  python research/prepare_data.py S2                         # from data/S2.pkl
+  python research/prepare_data.py S3 ~/Downloads/WESAD.zip   # straight from the zip (no extraction)
+  python research/prepare_data.py S3 ~/Downloads/WESAD       # from an extracted WESAD folder
 """
 import pickle
 import sys
+import zipfile
 from pathlib import Path
 
 import numpy as np
 from scipy.signal import decimate, resample_poly
 
-DATA = Path(__file__).resolve().parent.parent / "data"   # proje kokundeki data/
+DATA = Path(__file__).resolve().parent.parent / "data"   # data/ at the project root
 
 FS_RAW  = 700
 FS_RESP = 25
 FS_ECG  = 250
 
 subject = sys.argv[1] if len(sys.argv) > 1 else "S2"
-src = DATA / f"{subject}.pkl"
+source = Path(sys.argv[2]).expanduser() if len(sys.argv) > 2 else None
 dst = DATA / f"{subject}_prepared.npz"
 
-print(f"Yukleniyor: {src} (bu biraz surer)")
-with open(src, "rb") as f:
-    data = pickle.load(f, encoding="latin1")
+if source and source.suffix == ".zip":
+    zip_path = source
+    # Read the .pkl from inside the zip without extracting it: saves ~1 GB of disk
+    member = f"WESAD/{subject}/{subject}.pkl"
+    print(f"Loading: {zip_path}:{member} (this takes a while)")
+    with zipfile.ZipFile(zip_path) as z, z.open(member) as f:
+        data = pickle.load(f, encoding="latin1")
+else:
+    src = source / subject / f"{subject}.pkl" if source else DATA / f"{subject}.pkl"
+    print(f"Loading: {src} (this takes a while)")
+    with open(src, "rb") as f:
+        data = pickle.load(f, encoding="latin1")
 
 chest  = data["signal"]["chest"]
 resp   = chest["Resp"].flatten().astype(np.float64)
 ecg    = chest["ECG"].flatten().astype(np.float64)
 labels = data["label"].astype(np.int8)
 
-# --- Solunum: 700 -> 25 Hz (28 kat) ---
-# decimate once alcak geciren filtre uygular, sonra ornek atlar (aliasing olmasin diye).
-# scipy tek adimda en fazla ~13 kat onerir, bu yuzden 7 x 4 = 28 iki adimda yapiyoruz.
+# --- Respiration: 700 -> 25 Hz (factor 28) ---
+# decimate low-pass filters first, then drops samples (to avoid aliasing).
+# scipy recommends at most ~13x per step, so we do 7 x 4 = 28 in two steps.
 resp_25 = decimate(resp,    7, ftype="fir", zero_phase=True)
 resp_25 = decimate(resp_25, 4, ftype="fir", zero_phase=True)
 
-# --- EKG: 700 -> 250 Hz ---
-# 250/700 = 5/14 tam sayi bir kat degil; resample_poly 5 ile carpip 14'e boler (filtreli).
+# --- ECG: 700 -> 250 Hz ---
+# 250/700 = 5/14 is not an integer factor; resample_poly upsamples by 5 and downsamples by 14 (filtered).
 ecg_250 = resample_poly(ecg, 5, 14)
 
-# --- Etiketler ---
-# Etiketler kategori (1, 2, 4...), filtrelenemez; sadece ornek atliyoruz.
+# --- Labels ---
+# Labels are categories (1, 2, 4...) and can't be filtered; we just drop samples.
 labels_25  = labels[::FS_RAW // FS_RESP]
 labels_250 = labels[np.arange(len(ecg_250)) * FS_RAW // FS_ECG]
 
@@ -55,6 +70,6 @@ np.savez_compressed(
 )
 
 mb = lambda a: a.nbytes / 1e6
-print(f"Solunum: {len(resp):>9} ornek ({mb(resp):6.1f} MB) -> {len(resp_25):>7} ornek ({mb(resp_25.astype(np.float32)):5.2f} MB)")
-print(f"EKG:     {len(ecg):>9} ornek ({mb(ecg):6.1f} MB) -> {len(ecg_250):>7} ornek ({mb(ecg_250.astype(np.float32)):5.2f} MB)")
-print(f"Kaydedildi: {dst}")
+print(f"Respiration: {len(resp):>9} samples ({mb(resp):6.1f} MB) -> {len(resp_25):>7} samples ({mb(resp_25.astype(np.float32)):5.2f} MB)")
+print(f"ECG:         {len(ecg):>9} samples ({mb(ecg):6.1f} MB) -> {len(ecg_250):>7} samples ({mb(ecg_250.astype(np.float32)):5.2f} MB)")
+print(f"Saved: {dst}")

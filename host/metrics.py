@@ -1,95 +1,136 @@
-"""Dakikalik metrikler ve stres skoru (kural tabanli, v1).
+"""Per-minute metrics and stress score (rule-based, v1).
 
-Her HRV penceresi (60 sn) icin:
-  - nefes hizi ve nefes duzensizligi (o dakikadaki nefeslerden)
-  - RMSSD ve kalp hizi (cihazdan)
-  - stres skoru 0-100: 50 = senin normalin, yukari = normalinden stresli
+For each HRV window (60 s):
+  - breathing rate and breathing irregularity (from that minute's breaths)
+  - RMSSD and heart rate (from the device)
+  - stress score 0-100: 50 = your normal, higher = more stressed than your normal
 
-Skor, kisinin KENDI normaline gore hesaplanir (mutlak esik yok):
-  z = (deger - kisisel medyan) / kisisel yayilim   (medyan ve MAD: aykiri degerlere dayanikli)
-  ham = 0.50 * z(-ln RMSSD) + 0.25 * z(kalp hizi) + 0.25 * z(nefes duzensizligi)
-  skor = 100 / (1 + e^-ham)
+The score is relative to the person's OWN normal (no absolute thresholds):
+  z = (value - personal median) / personal spread   (median and MAD: robust to outliers)
+  raw = 0.50 * z(-ln RMSSD) + 0.25 * z(heart rate) + 0.25 * z(breathing irregularity)
+  score = 100 / (1 + e^-raw)
 
-Neden nefes HIZI yok: WESAD'da stres sirasinda nefes hizi dustu (konusma etkisi),
-meditasyonda da dustu; hiz tek basina stresi ayirt etmiyor. Duzensizlik ise ediyor.
-Agirliklar elle secildi (v1). Ileride cok kisili veriyle ogrenilecek (ML).
+Why no breathing RATE: in WESAD the rate dropped during stress (talking effect)
+and also during meditation, so rate alone doesn't separate stress. Irregularity does.
+Weights were chosen by hand (v1). Later they will be learned from multi-subject data (ML).
 
-Kullanim:  python host/metrics.py
+The math lives in pure functions (window_features, baseline_stats, stress_score);
+research/validate_subjects.py uses the SAME functions.
+
+Usage:  python host/metrics.py
 """
 import math
 import sys
+from datetime import datetime
 
 import numpy as np
 
 import db
 
 WEIGHTS = {"neg_ln_rmssd": 0.50, "hr_bpm": 0.25, "breath_cv": 0.25}
+WINDOW_S = 60.0
+TS_FORMAT = "%Y-%m-%d %H:%M:%S.%f"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS minute_metrics (
-    ts           TEXT PRIMARY KEY,   -- 60 sn'lik pencerenin sonu (hrv.ts ile ayni)
-    breath_rate  REAL,               -- nefes / dk
-    breath_cv    REAL,               -- nefes araliklarinin degisim katsayisi (std/ort)
-    holds        INTEGER,            -- bu dakikada baslayan nefes tutma sayisi
+    ts           TEXT PRIMARY KEY,   -- end of the 60 s window (same as hrv.ts)
+    breath_rate  REAL,               -- breaths / min
+    breath_cv    REAL,               -- coefficient of variation of breath intervals (std/mean)
+    holds        INTEGER,            -- breath holds starting in this minute
     rmssd_ms     REAL,
     hr_bpm       REAL,
-    stress       REAL                -- 0-100, 50 = kisisel normal
+    stress       REAL                -- 0-100, 50 = personal normal
 );
 """
 
 
-def robust_z(x):
-    """Kisisel medyana gore sapma, MAD ile olceklenmis (1.4826: normal dagilimda std'ye esitler)."""
-    med = np.nanmedian(x)
-    mad = 1.4826 * np.nanmedian(np.abs(x - med))
-    return (x - med) / (mad if mad > 0 else 1.0)
+# --- Pure computation (database-independent; times in seconds, same clock) ---
 
+def window_features(win_t, rmssd, hr, breath_t, breath_int, hold_t):
+    """Features for each HRV window. Output: feature name -> array."""
+    win_t, breath_t, breath_int, hold_t = map(np.asarray, (win_t, breath_t, breath_int, hold_t))
+    rate, cv, holds = [], [], []
+    for t in win_t:
+        m = (breath_t > t - WINDOW_S) & (breath_t <= t)
+        iv = breath_int[m]
+        if len(iv) >= 3:
+            rate.append(60.0 / iv.mean())
+            cv.append(iv.std() / iv.mean())
+        else:   # too few breaths: rate/irregularity not reliable
+            rate.append(math.nan)
+            cv.append(math.nan)
+        holds.append(int(np.sum((hold_t > t - WINDOW_S) & (hold_t <= t))))
+    rmssd = np.asarray(rmssd, dtype=float)
+    return {
+        "breath_rate": np.array(rate),
+        "breath_cv": np.array(cv),
+        "holds": np.array(holds),
+        "rmssd_ms": rmssd,
+        "hr_bpm": np.asarray(hr, dtype=float),
+        "neg_ln_rmssd": -np.log(rmssd),
+    }
+
+
+def baseline_stats(features, mask=None):
+    """Personal normal: (median, spread) per feature. mask: which minutes count as normal.
+    In production: the first days of data. In research: the calibration (baseline) segment."""
+    stats = {}
+    for k in WEIGHTS:
+        x = features[k] if mask is None else features[k][mask]
+        med = np.nanmedian(x)
+        mad = 1.4826 * np.nanmedian(np.abs(x - med))   # 1.4826: makes MAD equal to std for a normal distribution
+        stats[k] = (med, mad if mad > 0 else 1.0)
+    return stats
+
+
+def stress_score(features, stats):
+    """0-100 stress score; 50 = personal normal."""
+    raw = sum(w * np.nan_to_num((features[k] - stats[k][0]) / stats[k][1])
+              for k, w in WEIGHTS.items())
+    return 100.0 / (1.0 + np.exp(-raw))
+
+
+# --- Database ---
 
 def compute(conn):
     conn.executescript(SCHEMA)
-    windows = conn.execute("SELECT ts, rmssd_ms, hr_bpm FROM hrv ORDER BY ts").fetchall()
-
-    rows = []
-    for ts, rmssd, hr in windows:
-        intervals = np.array([r[0] for r in conn.execute(
-            "SELECT interval_s FROM breaths WHERE ts > datetime(?, '-60 seconds') AND ts <= ?",
-            (ts, ts))])
-        holds = conn.execute(
-            "SELECT COUNT(*) FROM holds WHERE start_ts > datetime(?, '-60 seconds') AND start_ts <= ?",
-            (ts, ts)).fetchone()[0]
-        if len(intervals) >= 3:
-            rate = 60.0 / intervals.mean()
-            cv = intervals.std() / intervals.mean()
-        else:   # cok az nefes: hiz/duzensizlik guvenilir degil
-            rate = cv = math.nan
-        rows.append((ts, rate, cv, holds, rmssd, hr))
-
-    if not rows:
+    hrv = conn.execute("SELECT ts, rmssd_ms, hr_bpm FROM hrv ORDER BY ts").fetchall()
+    if not hrv:
         return 0
-    rate, cv, rmssd, hr = (np.array([r[i] for r in rows], dtype=float) for i in (1, 2, 4, 5))
-    features = {"neg_ln_rmssd": -np.log(rmssd), "hr_bpm": hr, "breath_cv": cv}
-    raw = sum(w * np.nan_to_num(robust_z(features[k])) for k, w in WEIGHTS.items())
-    stress = 100.0 / (1.0 + np.exp(-raw))
+    breaths = conn.execute("SELECT ts, interval_s FROM breaths ORDER BY ts").fetchall()
+    holds = conn.execute("SELECT start_ts FROM holds ORDER BY start_ts").fetchall()
+
+    def sec(ts):
+        return datetime.strptime(ts, TS_FORMAT).timestamp()
+
+    f = window_features([sec(r[0]) for r in hrv], [r[1] for r in hrv], [r[2] for r in hrv],
+                        [sec(r[0]) for r in breaths], [r[1] for r in breaths],
+                        [sec(r[0]) for r in holds])
+    stress = stress_score(f, baseline_stats(f))   # v1: whole recording; later: past days
+
+    def num(x):
+        return None if math.isnan(x) else float(x)
 
     with conn:
         conn.executemany(
             "INSERT OR REPLACE INTO minute_metrics VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [(r[0], None if math.isnan(r[1]) else r[1], None if math.isnan(r[2]) else r[2],
-              r[3], r[4], r[5], float(s)) for r, s in zip(rows, stress)])
-    return len(rows)
+            [(hrv[i][0], num(f["breath_rate"][i]), num(f["breath_cv"][i]), int(f["holds"][i]),
+              float(f["rmssd_ms"][i]), float(f["hr_bpm"][i]), float(stress[i]))
+             for i in range(len(hrv))])
+    return len(hrv)
 
 
 def main():
     conn = db.connect()
     n = compute(conn)
-    print(f"{n} dakika hesaplandi.\n")
-    print(f"{'Saat':<7}{'Stres':>7}{'RMSSD':>9}{'Kalp':>7}{'Nefes':>8}{'Duzensiz':>10}")
+    print(f"{n} minutes computed.\n")
+    print(f"{'Time':<7}{'Stress':>7}{'RMSSD':>9}{'HR':>7}{'Breath':>8}{'Irreg.':>10}")
     for row in conn.execute("""
         SELECT strftime('%H:%M', ts), stress, rmssd_ms, hr_bpm, breath_rate, breath_cv
         FROM minute_metrics ORDER BY ts"""):
-        saat, s, rm, hr, br, cv = row
+        hhmm, s, rm, hr, br, cv = row
         bar = "#" * int(s / 5)
-        print(f"{saat:<7}{s:>6.0f} {rm:>6.0f}ms{hr:>6.0f}{(br or 0):>7.1f}{(cv or 0):>9.2f}  {bar}")
+        print(f"{hhmm:<7}{s:>6.0f} {rm:>6.0f}ms{hr:>6.0f}{(br or 0):>7.1f}{(cv or 0):>9.2f}  {bar}")
 
 
 if __name__ == "__main__":

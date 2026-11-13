@@ -16,6 +16,8 @@ data/
 firmware/test_native/dsp_test
 firmware/test_native/led_test
 firmware/test_native/led_sim
+firmware/test_native/ads_test
+firmware/test_native/pod_sim
 
 # PlatformIO build output
 .pio/

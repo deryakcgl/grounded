@@ -5,6 +5,8 @@
 //   H,<t_ms>                      breath hold started (t = last breath)
 //   E,<t_ms>,<duration_ms>        breath hold ended
 //   V,<t_ms>,<rmssd_x10>,<hr_x10> HRV window (60 s); x10 = 0.1 resolution
+//   L,<t_ms>,<bits>               electrode contact changed; bits = ADS1292R LOFF_STAT[4:0],
+//                                 0 = all connected (sent once at start, then on every change)
 //
 // t_ms: milliseconds since the device started. The host adds wall-clock time.
 // Why integers only? Printing floats on the device pulls in ~7 KB of double-math library
@@ -28,6 +30,10 @@ static inline int proto_hold_start(char* buf, size_t n, uint32_t t_ms) {
 
 static inline int proto_hold_end(char* buf, size_t n, uint32_t t_ms, uint32_t duration_ms) {
   return snprintf(buf, n, "E,%lu,%lu\n", (unsigned long)t_ms, (unsigned long)duration_ms);
+}
+
+static inline int proto_lead_off(char* buf, size_t n, uint32_t t_ms, uint8_t bits) {
+  return snprintf(buf, n, "L,%lu,%u\n", (unsigned long)t_ms, (unsigned)bits);
 }
 
 static inline int proto_hrv(char* buf, size_t n, uint32_t t_ms, float rmssd_ms, float hr_bpm) {

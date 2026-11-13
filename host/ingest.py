@@ -19,7 +19,7 @@ from pathlib import Path
 import numpy as np
 
 import db
-from protocol import Breath, HoldEnd, HoldStart, Hrv, parse
+from protocol import Breath, HoldEnd, HoldStart, Hrv, LeadOff, parse
 
 ROOT = Path(__file__).resolve().parent.parent
 NATIVE = ROOT / "firmware/test_native"
@@ -45,9 +45,11 @@ def ingest(lines, start, conn):
     def ts(t_ms):
         return (start + timedelta(milliseconds=t_ms)).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
 
-    counts = {"breath": 0, "hold": 0, "hrv": 0, "malformed": 0}
+    counts = {"breath": 0, "hold": 0, "hrv": 0, "lead_off": 0, "malformed": 0}
     with conn:   # one transaction: either everything is written or nothing
         for line in lines:
+            if line.startswith("#"):        # debug text from the device
+                continue
             ev = parse(line)
             if isinstance(ev, Breath):
                 conn.execute("INSERT OR IGNORE INTO breaths VALUES (?, ?)",
@@ -62,6 +64,8 @@ def ingest(lines, start, conn):
                                 WHERE start_ts = (SELECT MAX(start_ts) FROM holds
                                                   WHERE duration_s IS NULL AND start_ts <= ?)""",
                              (ev.duration_ms / 1000, ts(ev.t_ms)))
+            elif isinstance(ev, LeadOff):
+                counts["lead_off"] += 1     # not stored yet; will gate the metrics later
             elif isinstance(ev, Hrv):
                 conn.execute("INSERT OR IGNORE INTO hrv VALUES (?, ?, ?)",
                              (ts(ev.t_ms), ev.rmssd_ms, ev.hr_bpm))

@@ -24,6 +24,16 @@ class HoldEnd:
 
 
 @dataclass
+class LeadOff:
+    t_ms: int
+    bits: int          # ADS1292R LOFF_STAT[4:0]; 0 = all electrodes connected
+
+    @property
+    def connected(self):
+        return self.bits == 0
+
+
+@dataclass
 class Hrv:
     t_ms: int
     rmssd_ms: float
@@ -45,6 +55,8 @@ def parse(line):
             return HoldStart(*nums)
         if kind == "E" and len(nums) == 2:
             return HoldEnd(*nums)
+        if kind == "L" and len(nums) == 2:
+            return LeadOff(*nums)
         if kind == "V" and len(nums) == 3:
             return Hrv(nums[0], nums[1] / 10.0, nums[2] / 10.0)
     except ValueError:

@@ -1,11 +1,15 @@
 import pickle
+from pathlib import Path
+
 import numpy as np
 import matplotlib.pyplot as plt
+
+DATA = Path(__file__).resolve().parent.parent / "data"   # proje kokundeki data/
 
 FS = 700  # WESAD gogus sensorleri: saniyede 700 ornek
 
 # --- 1. Veriyi yukle ---
-with open("data/S2.pkl", "rb") as f:
+with open(DATA / "S2.pkl", "rb") as f:
     data = pickle.load(f, encoding="latin1")  # Python 2 ile kaydedilmis, bu yuzden latin1
 
 chest  = data["signal"]["chest"]

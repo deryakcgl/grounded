@@ -11,3 +11,12 @@ data/
 # macOS
 .DS_Store
 
+
+# Derlenmis test programi
+firmware/test_native/dsp_test
+
+# PlatformIO derleme ciktilari
+.pio/
+
+# WESAD'dan uretilen test verisi (lisans: yeniden dagitilamaz)
+firmware/dsp_target_test/include/test_vectors.h

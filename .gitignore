@@ -14,6 +14,8 @@ data/
 
 # Compiled test program
 firmware/test_native/dsp_test
+firmware/test_native/led_test
+firmware/test_native/led_sim
 
 # PlatformIO build output
 .pio/

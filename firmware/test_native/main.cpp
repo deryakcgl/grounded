@@ -4,12 +4,16 @@
 // Kullanim:
 //   ./dsp_test resp <dosya>   -> her satira bir solunum ornegi (25 Hz)
 //   ./dsp_test ecg  <dosya>   -> her satira bir EKG ornegi (250 Hz)
+//   ./dsp_test device <solunum> <ekg>
+//       "Sanal cihaz": iki sinyali gercek cihazdaki gibi ayni anda isler ve
+//       protokol satirlari uretir (protocol.h). host/ingest.py bunu okur.
 // Cikti (stdout, CSV): olay satirlari; research/compare_native.py okur.
 #include <stdio.h>
 #include <string.h>
 
 #include "beat_detector.h"
 #include "breath_detector.h"
+#include "protocol.h"
 
 static int run_resp(FILE* f) {
   BreathDetector det;
@@ -42,9 +46,60 @@ static int run_ecg(FILE* f) {
   return 0;
 }
 
+// Iki sinyal ayni saatle akar: her 1 solunum ornegine (25 Hz) 10 EKG ornegi (250 Hz).
+static int run_device(FILE* fr, FILE* fe) {
+  static_assert(ECG_FS % RESP_FS == 0, "EKG hizi solunum hizinin kati olmali");
+  BreathDetector breath;
+  BeatDetector beat;
+  HrvTracker hrv;
+  int32_t prev_beat = -1;
+  char line[48];
+  float r, e;
+
+  for (;;) {
+    for (int k = 0; k < ECG_FS / RESP_FS; k++) {
+      if (fscanf(fe, "%f", &e) != 1) return 0;
+      const int32_t b = beat.update(e);
+      if (b < 0) continue;
+      if (prev_beat >= 0 && hrv.update((float)(b - prev_beat) / ECG_FS)) {
+        proto_hrv(line, sizeof line, sample_to_ms(b, ECG_FS), hrv.rmssd(), hrv.heartRate());
+        fputs(line, stdout);
+      }
+      prev_beat = b;
+    }
+    if (fscanf(fr, "%f", &r) != 1) return 0;
+    const uint8_t ev = breath.update(r);
+    const uint32_t t = sample_to_ms(breath.lastBreathSample(), RESP_FS);
+    if (ev & BreathDetector::EV_HOLD_END) {
+      proto_hold_end(line, sizeof line, t, (uint32_t)(breath.holdDuration() * 1000.0f + 0.5f));
+      fputs(line, stdout);
+    }
+    if ((ev & BreathDetector::EV_BREATH) && breath.lastInterval() > 0.0f) {
+      proto_breath(line, sizeof line, t, (uint32_t)(breath.lastInterval() * 1000.0f + 0.5f));
+      fputs(line, stdout);
+    }
+    if (ev & BreathDetector::EV_HOLD_START) {
+      proto_hold_start(line, sizeof line, sample_to_ms(breath.holdStartSample(), RESP_FS));
+      fputs(line, stdout);
+    }
+  }
+}
+
 int main(int argc, char** argv) {
+  if (argc == 4 && strcmp(argv[1], "device") == 0) {
+    FILE* fr = fopen(argv[2], "r");
+    FILE* fe = fopen(argv[3], "r");
+    if (!fr || !fe) {
+      perror("dosya");
+      return 1;
+    }
+    const int rc = run_device(fr, fe);
+    fclose(fr);
+    fclose(fe);
+    return rc;
+  }
   if (argc != 3) {
-    fprintf(stderr, "kullanim: %s resp|ecg <dosya>\n", argv[0]);
+    fprintf(stderr, "kullanim: %s resp|ecg <dosya> | device <solunum> <ekg>\n", argv[0]);
     return 2;
   }
   FILE* f = fopen(argv[2], "r");

@@ -1,9 +1,9 @@
-"""Adim 6b: stres skoru WESAD etiketleriyle ne kadar uyusuyor?
+"""Step 6b: how well does the stress score match the WESAD labels?
 
-host/ingest.py ve host/metrics.py calistirilmis olmali (ayni --start ile).
-Host uygulamasi etiketleri bilmez; burada sadece degerlendirme icin eslestiriyoruz.
+Run host/ingest.py and host/metrics.py first (with the same --start).
+The host app never sees labels; we only match them here for evaluation.
 
-Kullanim: python research/stress_eval.py --start "2026-11-12 09:00"
+Usage: python research/stress_eval.py --start "2026-11-12 09:00"
 """
 import argparse
 import sqlite3
@@ -35,7 +35,7 @@ stress = np.array([r[1] for r in rows])
 
 
 def window_label(t1):
-    """60 sn'lik pencerenin cogunluk etiketi; %80'den azi tek etiketse 0 (karisik)."""
+    """Majority label of the 60 s window; 0 (mixed) if no label covers at least 80%."""
     seg = labels[int(max(0, t1 - 60) * fs):int(t1 * fs)]
     vals, counts = np.unique(seg, return_counts=True)
     i = np.argmax(counts)
@@ -48,36 +48,36 @@ COLORS = {1: "tab:blue", 2: "tab:orange", 4: "tab:green"}
 
 
 def auc(pos, neg):
-    """ROC AUC (Mann-Whitney): rastgele bir 'pos' dakikanin skoru, rastgele bir 'neg'
-    dakikanin skorundan yuksek olma olasiligi. 0.5 = yazi tura, 1.0 = kusursuz ayirt etme."""
+    """ROC AUC (Mann-Whitney): probability that a random 'pos' minute scores higher than a
+    random 'neg' minute. 0.5 = coin flip, 1.0 = perfect separation."""
     pos, neg = np.asarray(pos), np.asarray(neg)
     greater = (pos[:, None] > neg[None, :]).sum() + 0.5 * (pos[:, None] == neg[None, :]).sum()
     return greater / (len(pos) * len(neg))
 
 
-print(f"{'Durum':<12}{'Dakika':>7}{'Ort. stres':>12}{'Medyan':>8}")
+print(f"{'State':<12}{'Minutes':>7}{'Avg stress':>12}{'Median':>8}")
 for k, name in STATES.items():
     s = stress[lab == k]
     print(f"{name:<12}{len(s):>7}{s.mean():>12.0f}{np.median(s):>8.0f}")
 
-print(f"\nAUC  stres vs baseline:   {auc(stress[lab == 2], stress[lab == 1]):.2f}")
-print(f"AUC  stres vs meditasyon: {auc(stress[lab == 2], stress[lab == 4]):.2f}")
-print(f"AUC  stres vs digerleri:  {auc(stress[lab == 2], stress[(lab == 1) | (lab == 4)]):.2f}")
+print(f"\nAUC  stress vs baseline:   {auc(stress[lab == 2], stress[lab == 1]):.2f}")
+print(f"AUC  stress vs meditation: {auc(stress[lab == 2], stress[lab == 4]):.2f}")
+print(f"AUC  stress vs others:     {auc(stress[lab == 2], stress[(lab == 1) | (lab == 4)]):.2f}")
 
-# --- Grafik: gun boyu stres skoru ve gercek durumlar ---
+# --- Figure: stress score over the day vs true states ---
 fig, ax = plt.subplots(figsize=(13, 4.5))
 t_min_all = np.arange(len(labels)) / fs / 60
 for k, name in STATES.items():
     ax.fill_between(t_min_all, 0, 100, where=labels == k, color=COLORS[k], alpha=0.13,
-                    step="mid", label=f"gercek: {name}")
-ax.plot(t_end / 60, stress, "o-", color="tab:red", markersize=3, label="stres skoru")
-ax.axhline(50, color="0.5", linestyle="--", linewidth=1, label="kisisel normal (50)")
+                    step="mid", label=f"true: {name}")
+ax.plot(t_end / 60, stress, "o-", color="tab:red", markersize=3, label="stress score")
+ax.axhline(50, color="0.5", linestyle="--", linewidth=1, label="personal normal (50)")
 ax.set_ylim(0, 100)
-ax.set_xlabel("Zaman (dakika)")
-ax.set_ylabel("Stres skoru")
-ax.set_title(f"{args.subject}: stres skoru (v1, kural tabanli) ve gercek durumlar")
+ax.set_xlabel("Time (minutes)")
+ax.set_ylabel("Stress score")
+ax.set_title(f"{args.subject}: stress score (v1, rule-based) and true states")
 ax.legend(loc="upper right", fontsize=8)
 fig.tight_layout()
 FIGS.mkdir(exist_ok=True)
 fig.savefig(FIGS / f"{args.subject}_stress_score.png", dpi=120)
-print(f"\nGrafik: {FIGS / f'{args.subject}_stress_score.png'}")
+print(f"\nFigure: {FIGS / f'{args.subject}_stress_score.png'}")

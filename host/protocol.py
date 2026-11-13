@@ -1,7 +1,7 @@
-"""Cihaz -> host protokolunu cozer.
+"""Parses the device -> host protocol.
 
-Cihaz karsiligi: firmware/lib/grounded_dsp/protocol.h (birlikte degistir).
-Her satir bir olay; zamanlar cihaz acildigindan beri milisaniye.
+Device counterpart: firmware/lib/grounded_dsp/protocol.h (change both together).
+One event per line; times are milliseconds since the device started.
 """
 from dataclasses import dataclass
 
@@ -31,10 +31,10 @@ class Hrv:
 
 
 def parse(line):
-    """Bir satiri olay nesnesine cevirir. Bozuk ya da bilinmeyen satir: None.
+    """Turns one line into an event object. Malformed or unknown line: None.
 
-    Gercek baglantida (seri port, Bluetooth) satirlar yarim ya da bozuk gelebilir;
-    hata firlatmak yerine atlariz ki tek bir bozuk satir kaydi durdurmasin.
+    On a real link (serial port, Bluetooth) lines can arrive truncated or corrupted;
+    we skip them instead of raising, so a single bad line doesn't stop the recording.
     """
     parts = line.strip().split(",")
     try:

@@ -1,18 +1,18 @@
-"""Nefes dedektoru: referans uygulama (STM32'ye tasinacak).
+"""Breath detector: reference implementation (ported to the STM32).
 
-Kurallar (firmware'e tasinabilsin diye):
-- Ornekler TEK TEK islenir (update), dizi tutulmaz; sadece birkac sayi hafizada.
-- Sadece gecmise bakar (nedensel): gelecekteki ornekleri bilmez.
-- Girdi: 0.05-1.0 Hz bant geciren filtreden gecmis, 25 Hz solunum sinyali.
+Rules (so it can move to firmware):
+- Samples are processed ONE AT A TIME (update); no arrays, just a few numbers in memory.
+- Looks only at the past (causal): it never sees future samples.
+- Input: 25 Hz respiration signal, already through the 0.05-1.0 Hz bandpass.
 
-Yontem: uyarlanabilir esikli, histerezisli sifir gecisi.
-- Sinyalin tipik genligini iki hareketli ortalama ile takip ederiz:
-    env_fast (~4 sn)  -> esikler nefes derinligine hizla uyum saglar
-    env_slow (~60 sn) -> nefes tutarken esik sifira inmesin diye taban
-- Esik = K * max(env_fast, FLOOR * env_slow)
-- Sinyal -esik'in altina inip sonra +esik'in ustune cikarsa: 1 nefes.
-  (Termostat gibi: arada kalan kucuk dalgalanmalar sayilmaz.)
-- HOLD_S saniyedir nefes yoksa: nefes tutma.
+Method: zero crossing with an adaptive threshold and hysteresis.
+- The signal's typical amplitude is tracked with two moving averages:
+    env_fast (~4 s)  -> the threshold adapts quickly to breathing depth
+    env_slow (~60 s) -> a floor so the threshold doesn't drop to zero during a breath hold
+- threshold = K * max(env_fast, FLOOR * env_slow)
+- Signal drops below -threshold and then rises above +threshold: 1 breath.
+  (Like a thermostat: small wiggles in between are ignored.)
+- No breath for HOLD_S seconds: breath hold.
 """
 import math
 
@@ -23,29 +23,29 @@ class BreathDetector:
         self.fs = fs
         self.k = k
         self.floor = floor
-        self.min_interval = int(min_interval_s * fs)   # en hizli nefes: dakikada 40
+        self.min_interval = int(min_interval_s * fs)   # fastest breathing: 40 per minute
         self.hold_samples = int(hold_s * fs)
         self.warmup = int(warmup_s * fs)
 
-        # Ustel hareketli ortalama katsayilari: env += alpha * (|x| - env)
+        # Exponential moving-average coefficients: env += alpha * (|x| - env)
         self.alpha_fast = 1.0 - math.exp(-1.0 / (tau_fast_s * fs))
         self.alpha_slow = 1.0 - math.exp(-1.0 / (tau_slow_s * fs))
 
         self.env_fast = 0.0
         self.env_slow = 0.0
-        self.below = False         # histerezis durumu: -esik'in altina indik mi?
-        self.n = 0                 # islenen ornek sayisi (zaman sayaci)
-        self.last_breath = None    # son nefesin ornek indisi
+        self.below = False         # hysteresis state: have we gone below -threshold?
+        self.n = 0                 # samples processed (time counter)
+        self.last_breath = None    # sample index of the last breath
         self.in_hold = False
-        self.threshold = 0.0       # grafik icin disariya acik
+        self.threshold = 0.0       # exposed for plotting
 
     def update(self, x):
-        """Bir ornek isle. Olay listesi dondurur (cogu zaman bos).
+        """Process one sample. Returns a list of events (usually empty).
 
-        Olaylar:
-          ("breath", n, aralik_sn)      yeni nefes; aralik = onceki nefesten bu yana
-          ("hold_start", n_baslangic)   nefes tutma basladi (son nefesin zamani)
-          ("hold_end", n, sure_sn)      nefes tutma bitti
+        Events:
+          ("breath", n, interval_s)     new breath; interval = time since the previous breath
+          ("hold_start", n_start)       breath hold started (time of the last breath)
+          ("hold_end", n, duration_s)   breath hold ended
         """
         events = []
         n = self.n
@@ -56,10 +56,10 @@ class BreathDetector:
         self.env_slow += self.alpha_slow * (a - self.env_slow)
         self.threshold = self.k * max(self.env_fast, self.floor * self.env_slow)
 
-        if n < self.warmup:        # ortalamalar oturana kadar karar verme
+        if n < self.warmup:        # no decisions until the averages settle
             return events
 
-        # --- Histerezisli gecis: once asagi, sonra yukari ---
+        # --- Crossing with hysteresis: first down, then up ---
         if x < -self.threshold:
             self.below = True
         elif x > self.threshold and self.below:
@@ -72,7 +72,7 @@ class BreathDetector:
                 events.append(("breath", n, interval))
                 self.last_breath = n
 
-        # --- Nefes tutma: uzun suredir nefes yok ---
+        # --- Breath hold: no breath for a long time ---
         if (not self.in_hold and self.last_breath is not None
                 and n - self.last_breath > self.hold_samples):
             self.in_hold = True

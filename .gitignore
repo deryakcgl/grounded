@@ -3,7 +3,7 @@
 __pycache__/
 *.pyc
 
-# Veri (lisansli ve buyuk; asla commit etme)
+# Data (licensed and large; never commit)
 data/
 *.pkl
 *.zip
@@ -12,11 +12,11 @@ data/
 .DS_Store
 
 
-# Derlenmis test programi
+# Compiled test program
 firmware/test_native/dsp_test
 
-# PlatformIO derleme ciktilari
+# PlatformIO build output
 .pio/
 
-# WESAD'dan uretilen test verisi (lisans: yeniden dagitilamaz)
+# Test data generated from WESAD (license: no redistribution)
 firmware/dsp_target_test/include/test_vectors.h

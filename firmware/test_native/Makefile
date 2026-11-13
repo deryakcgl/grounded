@@ -1,8 +1,8 @@
-# grounded_dsp'yi Mac'te derler. -Wdouble-promotion: float yerine yanlislikla
-# double kullanilirsa uyarir (FPU'suz STM32'de double cok pahali).
+# Builds grounded_dsp on the Mac. -Wdouble-promotion: warns if double is used by accident
+# instead of float (double is very expensive on an STM32 without an FPU).
 CXX      ?= clang++
-# -ffp-contract=off: Mac (arm64) carpma+toplamayi tek adimda (FMA) yapabilir, Cortex-M0+
-# yapamaz. Kapatinca iki taraf bit bit ayni sonucu verir.
+# -ffp-contract=off: the Mac (arm64) can fuse multiply+add into one step (FMA), the Cortex-M0+
+# cannot. Turning it off makes both sides produce bit-identical results.
 CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -Wdouble-promotion -ffp-contract=off -I../lib/grounded_dsp
 SRC      := main.cpp ../lib/grounded_dsp/breath_detector.cpp ../lib/grounded_dsp/beat_detector.cpp
 

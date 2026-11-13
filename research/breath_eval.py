@@ -1,6 +1,6 @@
-"""Adim 3b: nefes dedektorunu WESAD verisinde ve yapay nefes tutma testinde degerlendir.
+"""Step 3b: evaluate the breath detector on WESAD data and on a synthetic breath-hold test.
 
-Once prepare_data.py calistirilmis olmali.
+Run prepare_data.py first.
 """
 import sys
 from pathlib import Path
@@ -23,13 +23,13 @@ resp, labels, FS = d["resp"].astype(np.float64), d["labels_resp"], int(d["fs_res
 STATES = {1: "Baseline", 2: "Stress", 4: "Meditation"}
 COLORS = {1: "tab:blue", 2: "tab:orange", 4: "tab:green"}
 
-# Nedensel filtre (sosfilt): cihazda canli veriyle yapabilecegimizin aynisi.
-# 3a'daki sosfiltfilt gelecege de bakiyordu; firmware bunu yapamaz.
+# Causal filter (sosfilt): exactly what the device can do with live data.
+# The sosfiltfilt in 3a also looked into the future; firmware can't do that.
 SOS = butter(2, [0.05, 1.0], btype="bandpass", fs=FS, output="sos")
 
 
 def run(signal):
-    """Dedektoru sinyal uzerinde ornek ornek calistir."""
+    """Run the detector over the signal sample by sample."""
     det = BreathDetector(fs=FS)
     breaths, holds, thr = [], [], np.empty(len(signal))
     hold_start = None
@@ -50,9 +50,9 @@ breaths, holds, thr = run(resp_f)
 b_idx = np.array([b[0] for b in breaths])
 b_int = np.array([b[1] if b[1] is not None else np.nan for b in breaths])
 
-# --- Sonuclar: durum basina dedektor ve FFT karsilastirmasi ---
-print(f"Toplam: {len(breaths)} nefes, {len(holds)} nefes tutma (>10 sn)\n")
-print(f"{'Durum':<12}{'Nefes':>7}{'Ort. hiz':>11}{'Medyan':>9}{'FFT':>7}{'Duzensizlik':>13}")
+# --- Results: detector vs FFT, per state ---
+print(f"Total: {len(breaths)} breaths, {len(holds)} breath holds (>10 s)\n")
+print(f"{'State':<12}{'Breaths':>7}{'Avg rate':>11}{'Median':>9}{'FFT':>7}{'Irregularity':>13}")
 resp_zero_phase = sosfiltfilt(SOS, resp)
 for lab, name in STATES.items():
     mask = labels == lab
@@ -60,58 +60,58 @@ for lab, name in STATES.items():
     in_state = mask[b_idx]
     intervals = b_int[in_state]
     intervals = intervals[~np.isnan(intervals)]
-    # FFT: etiketin ilk kesintisiz bolumu
+    # FFT: first contiguous run of the label
     start = int(np.argmax(mask))
     end = start + int(np.argmax(~mask[start:])) or len(mask)
     f, psd = welch(resp_zero_phase[start:end], fs=FS, nperseg=60 * FS)
     band = (f >= 0.1) & (f <= 0.7)
     fft_bpm = f[band][np.argmax(psd[band])] * 60
-    # Duzensizlik: nefes araliklarinin degisim katsayisi (std / ortalama)
+    # Irregularity: coefficient of variation of breath intervals (std / mean)
     cv = np.std(intervals) / np.mean(intervals)
-    print(f"{name:<12}{in_state.sum():>7}{in_state.sum() / minutes:>9.1f}/dk"
-          f"{60 / np.median(intervals):>7.1f}/dk{fft_bpm:>5.0f}/dk{cv:>12.2f}")
+    print(f"{name:<12}{in_state.sum():>7}{in_state.sum() / minutes:>9.1f}/min"
+          f"{60 / np.median(intervals):>6.1f}/min{fft_bpm:>4.0f}/min{cv:>12.2f}")
 
 for s, e, dur in holds:
-    print(f"Nefes tutma: {s / FS / 60:6.2f}. dk, {dur:.1f} sn, etiket={labels[s]}")
+    print(f"Breath hold: minute {s / FS / 60:6.2f}, {dur:.1f} s, label={labels[s]}")
 
-# --- Grafik 1: her durumdan 60 sn, esikler ve bulunan nefesler ---
+# --- Figure 1: 60 s of each state, thresholds and detected breaths ---
 fig, axes = plt.subplots(3, 1, figsize=(13, 9))
 for ax, (lab, name) in zip(axes, STATES.items()):
     start = int(np.argmax(labels == lab)) + 60 * FS
     w = slice(start, start + 60 * FS)
     t = np.arange(60 * FS) / FS
-    ax.fill_between(t, -thr[w], thr[w], color="0.85", label="histerezis bandi (+-esik)")
-    ax.plot(t, resp_f[w], color=COLORS[lab], linewidth=1.4, label="solunum (nedensel filtre)")
+    ax.fill_between(t, -thr[w], thr[w], color="0.85", label="hysteresis band (+-threshold)")
+    ax.plot(t, resp_f[w], color=COLORS[lab], linewidth=1.4, label="respiration (causal filter)")
     sel = b_idx[(b_idx >= w.start) & (b_idx < w.stop)]
     ax.plot((sel - w.start) / FS, resp_f[sel], "v", color="black", markersize=8,
-            label=f"bulunan nefes ({len(sel)})")
-    ax.set_title(f"{name}: 60 sn'de {len(sel)} nefes")
+            label=f"detected breath ({len(sel)})")
+    ax.set_title(f"{name}: {len(sel)} breaths in 60 s")
     ax.legend(loc="upper right", fontsize=8)
-axes[-1].set_xlabel("Zaman (s)")
+axes[-1].set_xlabel("Time (s)")
 fig.tight_layout()
 fig.savefig(FIGS / f"{subject}_breath_detection.png", dpi=120)
 
-# --- Grafik 2: tum oturum boyunca nefes hizi ---
+# --- Figure 2: breathing rate over the whole session ---
 fig, ax = plt.subplots(figsize=(13, 4.5))
 t_min = np.arange(len(labels)) / FS / 60
 for lab, name in STATES.items():
     ax.fill_between(t_min, 0, 50, where=labels == lab, color=COLORS[lab], alpha=0.12,
                     step="mid", label=name)
-ax.plot(b_idx / FS / 60, 60 / b_int, ".", color="0.3", markersize=3, label="her nefesin anlik hizi")
+ax.plot(b_idx / FS / 60, 60 / b_int, ".", color="0.3", markersize=3, label="instantaneous rate of each breath")
 for s, e, _ in holds:
     ax.axvspan(s / FS / 60, e / FS / 60, color="red", alpha=0.3)
 ax.set_ylim(0, 50)
-ax.set_xlabel("Zaman (dakika)")
-ax.set_ylabel("Nefes / dakika")
-ax.set_title(f"{subject}: oturum boyunca nefes hizi (kirmizi = nefes tutma)")
+ax.set_xlabel("Time (minutes)")
+ax.set_ylabel("Breaths / minute")
+ax.set_title(f"{subject}: breathing rate over the session (red = breath hold)")
 ax.legend(loc="upper right", fontsize=8)
 fig.tight_layout()
 fig.savefig(FIGS / f"{subject}_breath_rate.png", dpi=120)
 
-# --- Yapay test: nefes tutmayi yakalayabiliyor muyuz? ---
-# WESAD'da nefes tutma etiketi yok; o yuzden bir tane ekliyoruz:
-# baseline'dan 2 dakika al, 40-55 sn arasinda sinyali sabit tut (nefes tutmus gibi).
-print("\nYapay nefes tutma testi (40. sn'de 15 sn tutma):")
+# --- Synthetic test: can we catch a breath hold? ---
+# WESAD has no breath-hold label, so we add one:
+# take 2 minutes of baseline and hold the signal flat from 40 to 55 s (as if holding the breath).
+print("\nSynthetic breath-hold test (15 s hold at 40 s):")
 start = int(np.argmax(labels == 1)) + 120 * FS
 test = resp[start:start + 120 * FS].copy()
 h0, h1 = 40 * FS, 55 * FS
@@ -120,8 +120,8 @@ test[h0:h1] = test[h0] + rng.normal(0, 0.02 * np.std(test), h1 - h0)
 _, test_holds, _ = run(sosfilt(SOS, test))
 if test_holds:
     for s, e, dur in test_holds:
-        print(f"  Bulundu: {s / FS:.1f}. sn'de basladi, {dur:.1f} sn surdu")
+        print(f"  Found: started at {s / FS:.1f} s, lasted {dur:.1f} s")
 else:
-    print("  Bulunamadi!")
+    print("  Not found!")
 
 plt.show()

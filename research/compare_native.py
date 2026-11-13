@@ -1,10 +1,10 @@
-"""Adim 5: C++ dedektorlerini (firmware kodu) Python referansiyla karsilastir.
+"""Step 5: compare the C++ detectors (firmware code) with the Python reference.
 
-1. WESAD verisini metin dosyasina yazar (data/vectors/, git'e girmez).
-2. firmware/test_native'i derleyip C++ dedektorlerini bu veriyle calistirir.
-3. Ayni veriyi Python dedektorlerinden gecirir ve sonuclari karsilastirir.
+1. Writes the WESAD data to text files (data/vectors/, not in git).
+2. Builds firmware/test_native and runs the C++ detectors on that data.
+3. Runs the same data through the Python detectors and compares the results.
 
-Once prepare_data.py ve gen_filter_coeffs.py calistirilmis olmali.
+Run prepare_data.py and gen_filter_coeffs.py first.
 """
 import subprocess
 import sys
@@ -25,14 +25,14 @@ VEC.mkdir(exist_ok=True)
 
 subject = sys.argv[1] if len(sys.argv) > 1 else "S2"
 d = np.load(DATA / f"{subject}_prepared.npz")
-resp, ecg = d["resp"], d["ecg"]          # float32: cihazdaki gibi
+resp, ecg = d["resp"], d["ecg"]          # float32: same as on the device
 
-# --- 1. Veriyi metin olarak yaz (float32'yi kayipsiz temsil eden 9 basamak) ---
+# --- 1. Write the data as text (9 digits represent float32 losslessly) ---
 resp_file, ecg_file = VEC / f"{subject}_resp25.txt", VEC / f"{subject}_ecg250.txt"
 np.savetxt(resp_file, resp, fmt="%.9g")
 np.savetxt(ecg_file, ecg, fmt="%.9g")
 
-# --- 2. C++: derle ve calistir ---
+# --- 2. C++: build and run ---
 subprocess.run(["make", "-s", "-C", str(NATIVE)], check=True)
 
 
@@ -49,7 +49,7 @@ cpp_holds = np.array([int(r[1]) for r in cpp_resp if r[0] == "hold_start"])
 cpp_beats = np.array([int(r[1]) for r in cpp_ecg if r[0] == "beat"])
 cpp_rmssd = np.array([float(r[2]) for r in cpp_ecg if r[0] == "hrv"])
 
-# --- 3. Python referansi (float64) ---
+# --- 3. Python reference (float64) ---
 resp_f = sosfilt(butter(2, [0.05, 1.0], btype="bandpass", fs=25, output="sos"),
                  resp.astype(np.float64))
 bd = BreathDetector(fs=25)
@@ -69,21 +69,21 @@ py_rmssd = np.array([res[0] for x in np.diff(py_beats) / 250 if (res := hrv.upda
 
 
 def match(a, b, tol=0):
-    """a'daki olaylarin kaci b'de +-tol ornek icinde var."""
+    """How many events in a have a match in b within +-tol samples."""
     j = np.searchsorted(b, a)
     lo = np.abs(a - b[np.clip(j - 1, 0, len(b) - 1)])
     hi = np.abs(a - b[np.clip(j, 0, len(b) - 1)])
     return int(np.sum(np.minimum(lo, hi) <= tol))
 
 
-print(f"{'':<14}{'Python':>9}{'C++':>9}{'Birebir ayni':>15}{'+-1 ornek':>12}")
-for name, py, cpp in (("Nefes", py_breaths, cpp_breaths),
-                      ("Nefes tutma", py_holds, cpp_holds),
-                      ("Kalp atisi", py_beats, cpp_beats)):
+print(f"{'':<14}{'Python':>9}{'C++':>9}{'Identical':>15}{'+-1 sample':>12}")
+for name, py, cpp in (("Breaths", py_breaths, cpp_breaths),
+                      ("Breath holds", py_holds, cpp_holds),
+                      ("Beats", py_beats, cpp_beats)):
     exact, near = match(py, cpp, 0), match(py, cpp, 1)
     print(f"{name:<14}{len(py):>9}{len(cpp):>9}{exact / len(py):>14.2%}{near / len(py):>11.2%}")
 
 n = min(len(py_rmssd), len(cpp_rmssd))
 diff = np.abs(py_rmssd[:n] - cpp_rmssd[:n])
-print(f"\nRMSSD pencereleri: Python {len(py_rmssd)}, C++ {len(cpp_rmssd)}; "
-      f"en buyuk fark {diff.max():.3f} ms")
+print(f"\nRMSSD windows: Python {len(py_rmssd)}, C++ {len(cpp_rmssd)}; "
+      f"largest difference {diff.max():.3f} ms")

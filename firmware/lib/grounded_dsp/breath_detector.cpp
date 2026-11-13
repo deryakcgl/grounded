@@ -13,9 +13,9 @@ uint8_t BreathDetector::update(float raw) {
   const float floor_level = FLOOR * env_slow_;
   threshold_ = K * (env_fast_ > floor_level ? env_fast_ : floor_level);
 
-  if (n < WARMUP) return events;   // ortalamalar oturana kadar karar verme
+  if (n < WARMUP) return events;   // no decisions until the averages settle
 
-  // Histerezisli gecis: once -esik'in altina, sonra +esik'in ustune
+  // Crossing with hysteresis: first below -threshold, then above +threshold
   if (x < -threshold_) {
     below_ = true;
   } else if (x > threshold_ && below_) {
@@ -32,7 +32,7 @@ uint8_t BreathDetector::update(float raw) {
     }
   }
 
-  // Nefes tutma: uzun suredir nefes yok
+  // Breath hold: no breath for a long time
   if (!in_hold_ && last_breath_ >= 0 && n - last_breath_ > HOLD_SAMPLES) {
     in_hold_ = true;
     hold_start_ = last_breath_;

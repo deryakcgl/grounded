@@ -1,15 +1,15 @@
-// Cihaz -> host protokolu: her olay bir metin satiri.
-// Host karsiligi: host/protocol.py (bu dosyayla birlikte degistir).
+// Device -> host protocol: one text line per event.
+// Host counterpart: host/protocol.py (change both together).
 //
-//   B,<t_ms>,<aralik_ms>          nefes
-//   H,<t_ms>                      nefes tutma basladi (t = son nefes)
-//   E,<t_ms>,<sure_ms>            nefes tutma bitti
-//   V,<t_ms>,<rmssd_x10>,<hr_x10> HRV penceresi (60 sn); x10 = 0.1 hassasiyet
+//   B,<t_ms>,<interval_ms>        breath
+//   H,<t_ms>                      breath hold started (t = last breath)
+//   E,<t_ms>,<duration_ms>        breath hold ended
+//   V,<t_ms>,<rmssd_x10>,<hr_x10> HRV window (60 s); x10 = 0.1 resolution
 //
-// t_ms: cihaz acildigindan beri milisaniye. Saat bilgisini host ekler.
-// Neden sadece tam sayi? Cihazda float yazdirmak ~7 KB double kutuphanesi ceker
-// (bkz. dsp_target_test). Neden tek tek atimlar yok? Bluetooth'ta her atimi
-// gondermek pili tuketir; HRV'yi cihaz hesaplar, host sadece sonucu alir.
+// t_ms: milliseconds since the device started. The host adds wall-clock time.
+// Why integers only? Printing floats on the device pulls in ~7 KB of double-math library
+// (see dsp_target_test). Why no individual beats? Sending every beat over Bluetooth
+// drains the battery; the device computes HRV and the host only receives the result.
 #pragma once
 #include <stdint.h>
 #include <stdio.h>

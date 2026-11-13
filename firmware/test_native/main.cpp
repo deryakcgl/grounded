@@ -1,13 +1,13 @@
-// grounded_dsp kutuphanesini bilgisayarda (Mac) calistiran test programi.
-// Firmware ile AYNI .cpp dosyalarini derler; tek fark girdinin dosyadan gelmesi.
+// Test program that runs the grounded_dsp library on the computer (Mac).
+// Compiles the SAME .cpp files as the firmware; the only difference is that input comes from files.
 //
-// Kullanim:
-//   ./dsp_test resp <dosya>   -> her satira bir solunum ornegi (25 Hz)
-//   ./dsp_test ecg  <dosya>   -> her satira bir EKG ornegi (250 Hz)
-//   ./dsp_test device <solunum> <ekg>
-//       "Sanal cihaz": iki sinyali gercek cihazdaki gibi ayni anda isler ve
-//       protokol satirlari uretir (protocol.h). host/ingest.py bunu okur.
-// Cikti (stdout, CSV): olay satirlari; research/compare_native.py okur.
+// Usage:
+//   ./dsp_test resp <file>    -> one respiration sample per line (25 Hz)
+//   ./dsp_test ecg  <file>    -> one ECG sample per line (250 Hz)
+//   ./dsp_test device <resp> <ecg>
+//       "Virtual device": processes both signals together like the real device and
+//       emits protocol lines (protocol.h). host/ingest.py reads them.
+// Output (stdout, CSV): event lines; read by research/compare_native.py.
 #include <stdio.h>
 #include <string.h>
 
@@ -46,9 +46,9 @@ static int run_ecg(FILE* f) {
   return 0;
 }
 
-// Iki sinyal ayni saatle akar: her 1 solunum ornegine (25 Hz) 10 EKG ornegi (250 Hz).
+// Both signals share one clock: 10 ECG samples (250 Hz) per respiration sample (25 Hz).
 static int run_device(FILE* fr, FILE* fe) {
-  static_assert(ECG_FS % RESP_FS == 0, "EKG hizi solunum hizinin kati olmali");
+  static_assert(ECG_FS % RESP_FS == 0, "ECG rate must be a multiple of the respiration rate");
   BreathDetector breath;
   BeatDetector beat;
   HrvTracker hrv;
@@ -90,7 +90,7 @@ int main(int argc, char** argv) {
     FILE* fr = fopen(argv[2], "r");
     FILE* fe = fopen(argv[3], "r");
     if (!fr || !fe) {
-      perror("dosya");
+      perror("file");
       return 1;
     }
     const int rc = run_device(fr, fe);
@@ -99,7 +99,7 @@ int main(int argc, char** argv) {
     return rc;
   }
   if (argc != 3) {
-    fprintf(stderr, "kullanim: %s resp|ecg <dosya> | device <solunum> <ekg>\n", argv[0]);
+    fprintf(stderr, "usage: %s resp|ecg <file> | device <resp> <ecg>\n", argv[0]);
     return 2;
   }
   FILE* f = fopen(argv[2], "r");
